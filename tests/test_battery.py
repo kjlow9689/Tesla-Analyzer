@@ -326,6 +326,43 @@ def test_usable_capacity_falls_back_without_degradation_history():
         assert _usable_capacity(s, v, settings) == (72.4, "measured")
 
 
+def test_usable_capacity_takes_a_paired_streamed_charge_over_the_spec():
+    """A new copy read every Long Range as the 75 kWh spec until someone typed
+    in screen readings. One charge of 20+ points with both ends paired now
+    measures the pack; an unpaired one does not count."""
+    import json as _json
+    from types import SimpleNamespace
+
+    from app import state
+    from app.api.routes import _usable_capacity
+    from app.database import SessionLocal
+    from app.models import Vehicle
+
+    with SessionLocal() as s:
+        saved = state.get(s, state.TELEMETRY_CHARGES_KEY)
+        v = Vehicle(vin="LRW3F7EK3RC000003", model="Model 3", trim="74D Nova19",
+                    battery_capacity_kwh=75.0)
+        s.add(v)
+        settings = SimpleNamespace(battery_capacity_kwh=0.0, battery_new_range_km=0.0)
+        try:
+            state.put(s, state.TELEMETRY_CHARGES_KEY, _json.dumps([
+                {"start_time": "2026-10-07T07:13:41", "kwh_pack_level": 38.02,
+                 "level_start": 33.97, "level_end": 89.0}]))
+            s.commit()
+            assert _usable_capacity(s, v, settings)[1] == "variant spec"
+
+            state.put(s, state.TELEMETRY_CHARGES_KEY, _json.dumps([
+                {"start_time": "2026-10-11T14:47:38",
+                 "level_pair_start": [51.46, 38.08], "level_pair_end": [84.0, 60.12]}]))
+            s.commit()
+            assert _usable_capacity(s, v, settings) == (
+                67.7, "measured from 1 streamed charge")
+        finally:
+            state.put(s, state.TELEMETRY_CHARGES_KEY, saved or "[]")
+            s.delete(v)
+            s.commit()
+
+
 def test_fleet_degradation_curve_interpolates_and_extrapolates():
     from app.analysis.battery import fleet_degradation_pct
 
@@ -378,6 +415,8 @@ def test_vin_decode():
     assert info["model"] == "Model 3"
     assert info["year"] == 2024
     assert info["plant"] == "Shanghai"
+    assert info["battery"] == "NMC"
+    assert decode("LRW3F7FK3RC309372")["battery"] == "LFP"
     assert decode("DEMO12345") == {}
     assert decode("") == {}
 
@@ -571,3 +610,44 @@ def test_implied_capacity_prefers_the_curve_figure_over_the_endpoints():
     assert out["median_kwh"] == 67.8
     assert out["samples"][0]["method"] == "curve"
     assert out["samples"][0]["curve_samples"] == 13
+
+
+def test_the_vin_battery_code_sets_the_starting_pack():
+    """An LFP car is the standard-range pack from its VIN alone, before any
+    charge has measured it; an NMC car still goes by its trim badge."""
+    from types import SimpleNamespace
+
+    from app.analysis.battery import usable_capacity_for
+    from app.api.routes import _usable_capacity
+    from app.database import SessionLocal
+    from app.models import Vehicle
+
+    assert usable_capacity_for("Model 3", "", 2024, "LFP") == 57.5
+    assert usable_capacity_for("Model Y", "74D", 2024, "LFP") == 60.0
+    assert usable_capacity_for("Model 3", "74D", 2024, "NMC") == 75.0
+    assert usable_capacity_for("Model 3", "", 2024, "NMC") is None
+
+    with SessionLocal() as s:
+        v = Vehicle(vin="LRW3F7FA3RC000004", model="Tesla", trim="",
+                    battery_capacity_kwh=75.0)
+        s.add(v)
+        s.commit()
+        try:
+            settings = SimpleNamespace(battery_capacity_kwh=0.0, battery_new_range_km=0.0)
+            assert _usable_capacity(s, v, settings) == (57.5, "variant spec")
+        finally:
+            s.delete(v)
+            s.commit()
+
+
+def test_capacity_health_sets_a_measured_pack_against_the_vin_spec():
+    from app.api.routes import _capacity_health
+
+    h = _capacity_health(68.33, "measured from 6 screen readings", 75.0)
+    assert h == {"new_kwh": 75.0, "measured_kwh": 68.3,
+                 "source": "measured from 6 screen readings",
+                 "health_pct": 91.1, "degradation_pct": 8.9}
+    # The spec, an override or no spec at all measures nothing.
+    assert _capacity_health(75.0, "variant spec", 75.0) is None
+    assert _capacity_health(70.0, "override", 75.0) is None
+    assert _capacity_health(68.3, "measured from 1 streamed charge", None) is None

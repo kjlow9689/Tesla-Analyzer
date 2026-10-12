@@ -3402,6 +3402,15 @@ document.addEventListener("keydown", (e) => {
   if (e.target && e.target.id === "plan-dest" && e.key === "Enter") { e.preventDefault(); lookupPlanDest(); }
 });
 
+// Measured usable kWh against the same pack when new (VIN spec): a second
+// reading of health beside the rated-range one, in kWh rather than km.
+function capHtml(c) {
+  if (!c) return "";
+  return `<div class="bat-line">Capacity <strong>${fmt(c.measured_kwh, 1)} kWh</strong> ` +
+    `of ${fmt(c.new_kwh, 1)} kWh when new: <strong>${fmt(c.health_pct, 1)}%</strong> ` +
+    `(${fmt(c.degradation_pct, 1)}% degradation, ${c.source})</div>`;
+}
+
 function renderBattery(d) {
   const card = document.getElementById("battery-card");
   const body = document.getElementById("battery-body");
@@ -3441,6 +3450,7 @@ function renderBattery(d) {
     <div class="bat-line">Estimated full range <strong>${b.est_full_range_km} km</strong>
       vs ${ref} (${b.degradation_pct}% degradation)</div>
     <div class="bat-line">Based on ${b.n_readings} readings · avg SoC ${b.avg_soc}% · lowest seen ${b.min_soc_seen}%</div>
+    ${capHtml(b.capacity_health)}
     ${fleet}
     ${forecastHtml(b.forecast)}
     ${habits}`;
@@ -4564,6 +4574,41 @@ function csvOf(rows, headers) {
   return headers.join(",") + "\n" +
     rows.map((r) => headers.map((h) => esc(r[h])).join(",")).join("\n") + "\n";
 }
+// Hand a file to the phone without leaving the app. Opened as a page (the
+// old window.location download), a ZIP on an installed iPhone app took over
+// the whole screen with no way back: a home-screen app has no browser back
+// button. The share sheet instead offers Save to Files, AirDrop, WeChat and
+// the rest, and closing it returns to the dashboard. Browsers without file
+// sharing get an ordinary download link.
+async function saveFile(source, fallbackName) {
+  let blob = source, name = fallbackName;
+  if (typeof source === "string") {
+    const r = await fetch(source, { credentials: "same-origin" });
+    if (!r.ok) { alert(`Export failed (${r.status}).`); return; }
+    const cd = r.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+    if (m) name = decodeURIComponent(m[1]);
+    blob = await r.blob();
+  }
+  const file = new File([blob], name, { type: blob.type || "application/octet-stream" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: name });
+      return;
+    } catch (e) {
+      if (e && e.name === "AbortError") return;   // closed the sheet
+      // Anything else (no user gesture left after the fetch): download instead.
+    }
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(file);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
 async function exportCsv() {
   // Ask which scope: OK = everything, Cancel = only the current window.
   const rawRange = document.getElementById("range").value;
@@ -4578,7 +4623,7 @@ async function exportCsv() {
   if (!STATIC_MODE) {
     const q = all ? "" : currentDrive ? "?current_drive=1"
       : (sinceCharge ? "?since_charge=1" : `?days=${rawRange}`);
-    window.location.href = "/api/export/csv" + q;
+    await saveFile("/api/export/csv" + q, "tesla-analyzer.zip");
     return;
   }
 
@@ -4611,12 +4656,8 @@ async function exportCsv() {
     "energy_added_kwh", "charge_type", "max_power_kw", "location",
     "cost", "outside_temp_c"]));
   const blob = await zip.generateAsync({ type: "blob" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = all ? "tesla-analyzer-all.zip"
-    : `tesla-analyzer-${currentDrive ? "current-drive" : sinceCharge ? "since-charge" : rawRange + "d"}.zip`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  await saveFile(blob, all ? "tesla-analyzer-all.zip"
+    : `tesla-analyzer-${currentDrive ? "current-drive" : sinceCharge ? "since-charge" : rawRange + "d"}.zip`);
 }
 const exportBtn = document.getElementById("btn-export");
 if (exportBtn) exportBtn.addEventListener("click", exportCsv);
@@ -4642,8 +4683,8 @@ function wireSectionExports() {
       const raw = document.getElementById("range").value;
       const q = raw === "drive" ? "current_drive=1"
         : raw === "charge" ? "since_charge=1" : `days=${raw}`;
-      window.location.href =
-        `/api/export/section?name=${encodeURIComponent(card.dataset.export)}&${q}`;
+      saveFile(`/api/export/section?name=${encodeURIComponent(card.dataset.export)}&${q}`,
+        `tesla-analyzer-${card.dataset.export}.csv`);
     });
     h2.appendChild(btn);
   });
@@ -5192,3 +5233,15 @@ wireInfoButtons(document);
 
 // First load lands on the home (garage) page for car selection.
 showHome();
+
+// No zoom. iOS Safari ignores user-scalable=no in the viewport tag, so the
+// pinch gesture itself is cancelled here; touch-action in style.css covers
+// double-tap and every other browser. One-finger scrolling is untouched.
+(() => {
+  const stop = (e) => e.preventDefault();
+  ["gesturestart", "gesturechange", "gestureend"].forEach((t) =>
+    document.addEventListener(t, stop, { passive: false }));
+  document.addEventListener("touchmove", (e) => {
+    if (e.touches && e.touches.length > 1) e.preventDefault();
+  }, { passive: false });
+})();
