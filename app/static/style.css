@@ -2451,11 +2451,19 @@ main > .card { max-width: 100%; }
    column height and share it between the tiles. */
 .gl-side > .gl-trip { flex: 1 1 auto; max-height: 75%; margin-block: auto; }
 /* Room for the odometer line under the tiles while driving. */
-.gl-side > .gl-trip:has(.gl-odo) { max-height: 86%; }
+.gl-side > .gl-trip:has(.gl-odo) { max-height: 78%; }
 .gl-side > .gl-trip .gl-rts { flex: 1 1 auto; grid-auto-rows: 1fr; }
-.gl-side > .gl-trip .gl-rt strong { font-size: clamp(18px, 5.4vh, 26px); }
+.gl-side > .gl-trip .gl-rt strong { font-size: clamp(23px, 7.6vh, 35px); line-height: 1; }
 @media (orientation: landscape) and (max-width: 740px) {
-  .gl-side > .gl-trip .gl-rt strong { font-size: clamp(14px, 4.4vh, 18px); }
+  .gl-side > .gl-trip .gl-rt strong { font-size: clamp(18px, 6vh, 25px); }
+  /* Narrow tiles: a smaller icon, so the label (the unit) still fits. */
+  .gl-side > .gl-trip .gl-rt { column-gap: 3px; padding-left: 6px; padding-right: 6px; }
+  .gl-side > .gl-trip .gl-rt i { width: 14px; height: 14px; }
+  .gl-side > .gl-trip .gl-rt i svg { width: 11px; height: 11px; }
+  .gl-side > .gl-trip .gl-rt span { letter-spacing: 0; font-size: 8.5px; }
+  /* Narrow phones: the odometer icon says what the reading is. */
+  .gl-odo span { display: none; }
+  .gl-odo { padding: 4px 8px; }
 }
 
 /* Figures and headings are measured and shrunk to fit (glFit in app.js): they
@@ -2464,3 +2472,135 @@ main > .card { max-width: 100%; }
 .gl-rt strong, .gl-rt span, .gl-trip-h, .gl-power-top, .gl-battbar-top, .gl-power-sub { white-space: nowrap; }
 .gl-rt strong, .gl-rt span { min-width: 0; overflow: visible; text-overflow: clip; }
 .gl-side > .gl-trip .gl-trip-h em { overflow: visible; text-overflow: clip; }
+
+/* Live, under the power bar: range at this drive's rate, and regen back. */
+.gl-minis { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.gl-mini { min-width: 0; padding: 5px 8px; border-radius: 8px; background: #0a1017; border: 1px solid #1d2a38;
+  border-left: 2px solid #22d3ee; display: grid; gap: 1px; white-space: nowrap; }
+.gl-mini.regen { border-left-color: var(--green); }
+.gl-mini span { font-size: 8.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; overflow: hidden; text-overflow: ellipsis; }
+.gl-mini strong { font: 700 clamp(13px, 3.9vh, 18px) ui-monospace, "SF Mono", Menlo, monospace; color: #e8fbff; }
+.gl-mini strong small { font-size: .55em; color: var(--muted); margin-left: 3px; font-family: inherit; }
+.gl-mini em { font-style: normal; font-size: 9px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.gl-trace-h strong.good { color: var(--green); } .gl-trace-h strong.warn { color: var(--amber); }
+.gl-trace-h i { font-style: normal; }
+@media (orientation: landscape) and (max-width: 740px) {
+  .gl-minis { gap: 6px; margin-top: 6px; }
+  .gl-mini { padding: 4px 5px; }
+  .gl-mini span { font-size: 7.5px; letter-spacing: 0; }
+  .gl-mini em { font-size: 8px; }
+  .gl-wide-only { display: none; }
+}
+/* Driving: the right column takes the same height as the trip computer on
+   the left (86% of the column, centred), the trace giving way to fit. */
+.gl-3 > .gl-side:has(> .gl-power) { height: 78%; align-self: center; justify-content: space-between; padding: 0; }
+.gl-3 > .gl-side:has(> .gl-power) > .gl-power, .gl-3 > .gl-side:has(> .gl-power) > .gl-battbar { padding: 7px 10px; }
+.gl-3 > .gl-side:has(> .gl-power) .gl-trace { min-height: 0; padding: 6px 10px; }
+.gl-3 > .gl-side:has(> .gl-power) .gl-trace svg { min-height: 24px; }
+.gl-3 > .gl-side:has(> .gl-power) .gl-battbar-cell { height: 13px; margin-top: 4px; }
+@media (orientation: landscape) and (max-height: 440px) {
+  /* Phone height: the scale under the power bar and the gaps give way, so
+     the Wh/km trace keeps room to be read. */
+  .gl-3 > .gl-side:has(> .gl-power) { gap: 5px; }
+  .gl-3 > .gl-side:has(> .gl-power) .gl-power-scale { display: none; }
+  .gl-3 > .gl-side:has(> .gl-power) > .gl-power, .gl-3 > .gl-side:has(> .gl-power) > .gl-battbar { padding: 5px 8px; }
+  .gl-3 > .gl-side:has(> .gl-power) .gl-power-top strong, .gl-3 > .gl-side:has(> .gl-power) .gl-battbar-top strong { font-size: clamp(14px, 4.2vh, 18px); }
+  .gl-3 > .gl-side:has(> .gl-power) .gl-power-sub { font-size: 9.5px; margin-top: 1px; }
+  .gl-3 > .gl-side:has(> .gl-power) .gl-trace { padding: 4px 8px; }
+}
+/* Compact: label on one line, the figure and its note on the next. */
+.gl-mini { padding: 3px 7px; gap: 0; }
+.gl-mini > div { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+.gl-mini strong { font-size: clamp(11px, 3.1vh, 14px); }
+.gl-mini em { font-size: 8.5px; }
+.gl-minis { margin-top: 6px; gap: 6px; }
+@media (orientation: landscape) and (max-width: 740px) {
+  .gl-mini { padding: 3px 5px; }
+  .gl-mini span { font-size: 7.5px; letter-spacing: 0; }
+  .gl-mini em { display: none; }
+}
+/* Smaller box titles under the power bar. */
+.gl-mini span { font-size: 7.5px; letter-spacing: .04em; }
+@media (orientation: landscape) and (max-width: 740px) { .gl-mini span { font-size: 7px; letter-spacing: 0; } }
+/* iPhone Pro height: the shorter trip panel still holds its tiles and the
+   odometer line. */
+@media (orientation: landscape) and (max-height: 400px) and (min-width: 741px) {
+  .gl-side > .gl-trip:has(.gl-odo) { padding-top: 8px; padding-bottom: 8px; }
+  .gl-side > .gl-trip:has(.gl-odo) .gl-rts { gap: 6px; padding-top: 6px; }
+  .gl-side > .gl-trip:has(.gl-odo) .gl-rt { padding-top: 5px; padding-bottom: 5px; }
+  .gl-side > .gl-trip:has(.gl-odo) .gl-rt strong { font-size: clamp(20px, 6.8vh, 27px); }
+  .gl-side > .gl-trip:has(.gl-odo) .gl-odo { margin-top: 6px; padding-top: 3px; padding-bottom: 3px; }
+}
+/* Live page on screen (body.gl-eco): true black behind everything. On the
+   OLED screen of a recent iPhone a black pixel is switched off, and the deep
+   navy here lit almost every pixel on the screen (95% of them, against 31%
+   in black) for the whole drive. Borders, figures and colours stay. */
+.gl-eco .glance, .gl-eco .gl-main, .gl-eco .gl-body, .gl-eco .gl-pod, .gl-eco .gl-trip, .gl-eco .gl-rt,
+.gl-eco .gl-odo, .gl-eco .gl-mini, .gl-eco .gl-trace, .gl-eco .gl-power, .gl-eco .gl-battbar { background: #000; }
+.gl-eco .glance::before, .gl-eco .glance::after, .gl-eco .gl-main::before, .gl-eco .gl-main::after,
+.gl-eco .gl-pod::before, .gl-eco .gl-pod::after { background: none; }
+.gl-eco .gl-speedo > polygon:first-of-type { fill: #000; }
+.gl-eco .gl-power-track { background: #000; box-shadow: inset 0 0 0 1px #243142; }
+/* The strips' moving highlight is held still with the animation, which left
+   one white dash parked on each: without the animation, the dashes alone. */
+.gl-eco .gl-frame .strip { background:
+  repeating-linear-gradient(90deg, color-mix(in srgb, var(--tc) 85%, transparent) 0 10px, transparent 10px 15px); }
+
+/* Watch-face dimming on the Live page (body.gl-dim, see glDimArm): the
+   frame, the tabs, labels, borders, bars and the trace fade; the speed, the
+   gear and the figures stay at full brightness. Opacity alone, so the fade
+   is a single composited step, not a repaint every second. */
+.gl-frame, .gl-rail, .gl-head, .gl-foot, .gl-trip-h, .gl-rt i, .gl-rt span, .gl-rt::after,
+.gl-odo i, .gl-odo span, .gl-power-top span, .gl-power-track, .gl-mini span, .gl-mini em,
+.gl-trace, .gl-battbar-top span, .gl-battbar-cell, .gl-power-sub, .gl-speedo > :not(text) { transition: opacity .8s ease; }
+.gl-dim .gl-frame, .gl-dim .gl-rail, .gl-dim .gl-head, .gl-dim .gl-foot { opacity: .3; }
+.gl-dim .gl-trip-h, .gl-dim .gl-rt i, .gl-dim .gl-rt span, .gl-dim .gl-rt::after, .gl-dim .gl-odo i, .gl-dim .gl-odo span,
+.gl-dim .gl-power-top span, .gl-dim .gl-mini span, .gl-dim .gl-mini em, .gl-dim .gl-battbar-top span,
+.gl-dim .gl-power-sub { opacity: .4; }
+.gl-dim .gl-power-track, .gl-dim .gl-battbar-cell, .gl-dim .gl-trace { opacity: .45; }
+.gl-dim .gl-speedo > :not(text) { opacity: .35; }
+.gl-dim .gl-trip, .gl-dim .gl-rt, .gl-dim .gl-odo, .gl-dim .gl-mini, .gl-dim .gl-power, .gl-dim .gl-battbar,
+.gl-dim .gl-trace { border-color: #12181f; box-shadow: none; }
+.gl-dimchip { font-family: inherit; line-height: inherit; cursor: pointer; border: 0; }
+
+/* Readings running late (body.gl-stale, see GL_STALE_S): the speed greys and
+   the chip shows; hidden otherwise. */
+.gl-stalechip { display: none; }
+.gl-stale .gl-stalechip { display: inline-flex; }
+.gl-stale .gl-speedo .gl-spd { fill: #6f7f94; filter: none; }
+/* Est. range and Regen back: sized to be read at a glance while driving. */
+.gl-mini span { font-size: 9.5px; letter-spacing: .03em; color: #9fb0c3; }
+.gl-mini strong { font-size: clamp(15px, 4.6vh, 21px); }
+.gl-mini em { font-size: 10.5px; color: #9fb0c3; }
+@media (orientation: landscape) and (max-width: 740px) {
+  .gl-mini span { font-size: 8.5px; letter-spacing: 0; }
+  .gl-mini strong { font-size: clamp(14px, 4.4vh, 18px); }
+}
+/* The note sits at the right end of the figure's line. */
+.gl-mini > div em { margin-left: auto; overflow: visible; font-size: 10px; }
+.gl-mini strong small { margin-left: 2px; }
+@media (orientation: landscape) and (max-width: 740px) {
+  /* Room for the late-readings chip on one line. */
+
+}
+/* At this size the figures fill the boxes: the notes give way. */
+.gl-mini > div em { display: none; }
+/* The car's own rated range beside the battery title, to set against
+   Est. range above it. */
+.gl-rated { font-style: normal; margin-left: 8px; text-transform: none; letter-spacing: 0; font-size: .85em; color: #9fb0c3; }
+.gl-rated i { font-style: normal; }
+@media (orientation: landscape) and (max-width: 740px) { .gl-rated { margin-left: 5px; margin-right: 6px; } }
+/* Live bottom line: always one row. */
+.gl-eco .glance .gl-foot { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
+.gl-eco .glance .gl-foot > * { flex: 0 0 auto; }
+.glance .gl-live { font-size: 11px; letter-spacing: .08em; }
+@media (orientation: landscape) and (max-width: 740px) { .glance .gl-live { font-size: 10px; letter-spacing: .04em; } }
+.gl-dimchip { letter-spacing: .06em; color: #cfe8ff; }
+/* The late-readings chip sits in the title bar, beside the drive time, so
+   the bottom line keeps its temperature and climate. */
+.gl-head .gl-stalechip { margin-left: auto; font-size: 12px; }
+.gl-stale .gl-head .gl-swap { margin-left: 10px; }
+@media (orientation: landscape) and (max-width: 740px) {
+  /* Narrow phones: the drive time gives way to the signal chip. */
+  .gl-stale .gl-head .gl-sub { display: none; }
+}

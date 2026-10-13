@@ -4157,8 +4157,10 @@ function glSpeedo({ value, max = 160, mark = null, gear = null, acc = 0, label =
   const v = has ? +value : 0;
   // A colour for each speed band, so the panel changes as the car speeds up
   // through town, main road and highway speeds, not only past 110.
-  const colourAt = (x) => (x > 140 ? "#ff6b70" : x > 120 ? "#fb923c" : x > 100 ? "#facc15"
-    : x > 80 ? "#a3e635" : x > 60 ? "#34d399" : x > 30 ? "#22d3ee" : "#60a5fa");
+  // Seven clearly different hues, one per band: blue, cyan, green, yellow,
+  // orange, red, then magenta past 140.
+  const colourAt = (x) => (x > 140 ? "#e040fb" : x > 120 ? "#ff3b3b" : x > 100 ? "#ff8a1f"
+    : x > 80 ? "#ffe03a" : x > 60 ? "#2ee86a" : x > 30 ? "#19e3f5" : "#3d7bff");
   const X0 = 30, X1 = 230, N = 40, step = (X1 - X0) / N, BY = 186, BH = 15;
   const xOf = (x) => X0 + Math.max(0, Math.min(max, x)) / max * (X1 - X0);
   let segs = "";
@@ -4220,7 +4222,7 @@ function glSpeedo({ value, max = 160, mark = null, gear = null, acc = 0, label =
     <path d="M70 15h120M70 225h120" stroke="${frame}" stroke-width="3.4" stroke-linecap="square" filter="url(#${uid}-glow)"/>
     ${edge}
     ${gears}${wings}
-    <text x="130" y="${num.length >= 3 ? 140 : 150}" text-anchor="middle" font-size="${size}" font-weight="800" fill="#f4fbff"
+    <text class="gl-spd" x="130" y="${num.length >= 3 ? 140 : 150}" text-anchor="middle" font-size="${size}" font-weight="800" fill="#f4fbff"
       filter="url(#${uid}-glow)" style="font-variant-numeric:tabular-nums">${num}</text>
     <text x="130" y="166" text-anchor="middle" font-size="10" font-weight="650" letter-spacing="2" fill="#7e93ab">KM/H</text>
     <g filter="url(#${uid}-glow)">${segs}</g>${markTick}${pointer}${labels}
@@ -4503,6 +4505,55 @@ function glTrace(hist) {
     </svg></div>`;
 }
 
+// Wh/km over the last three minutes, each point averaged over the 15 s
+// before it (energy over distance, not a one-second ratio), against the rated
+// line: green under it, amber over it.
+function glEffTrace(hist, rated) {
+  const W = 300, H = 92, R = rated || 150;
+  const n = (v) => Math.round(v).toLocaleString("en-US");
+  const pts = [];
+  for (let i = 1; i < (hist || []).length; i++) {
+    let e = 0, d = 0;
+    for (let j = i; j > 0 && hist[i].t - hist[j - 1].t <= 15; j--) {
+      const dt = hist[j].t - hist[j - 1].t;
+      if (dt <= 0 || dt > 10 || hist[j].kw == null) continue;
+      e += hist[j].kw * dt / 3600;
+      d += hist[j].v * dt / 3600;
+    }
+    pts.push({ t: hist[i].t, w: d > 0.02 ? e * 1000 / d : null });
+  }
+  const shown = pts.filter((p) => p.w != null);
+  const head = (now) => `<div class="gl-trace-h"><span>Wh/km<i class="gl-wide-only"> · last 3 min</i></span>
+      <span>${now != null ? `<strong class="${now > R ? "warn" : "good"}">${n(now)}</strong> now · ` : ""}rated ${n(R)}</span></div>`;
+  if (shown.length < 2) {
+    return `<div class="gl-trace">${head(null)}<div class="gl-trace-wait">building the trace…</div></div>`;
+  }
+  const lo = Math.min(...shown.map((p) => p.w)), hi = Math.max(...shown.map((p) => p.w));
+  // The rated line sits near the middle; a spike past the window is drawn at its edge.
+  const top = Math.min(Math.max(hi, R * 1.6), R * 2.5), bot = Math.max(Math.min(lo, R * 0.4), -R * 0.5);
+  const t0 = hist[0].t, t1 = hist[hist.length - 1].t || t0 + 1;
+  const x = (t) => ((t - t0) / Math.max(1, t1 - t0) * W).toFixed(1);
+  const y = (w) => (4 + (top - Math.max(bot, Math.min(top, w))) / (top - bot) * (H - 8)).toFixed(1);
+  const yr = y(R);
+  let path = "", open = false;
+  for (const p of pts) {
+    if (p.w == null) { open = false; continue; }
+    path += `${open ? "L" : "M"}${x(p.t)} ${y(p.w)} `;
+    open = true;
+  }
+  const uid = `ge${++glDialSeq}`;
+  return `<div class="gl-trace">${head(shown[shown.length - 1].w)}
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+      <defs><clipPath id="${uid}-a"><rect x="0" y="0" width="${W}" height="${yr}"/></clipPath>
+        <clipPath id="${uid}-b"><rect x="0" y="${yr}" width="${W}" height="${H}"/></clipPath></defs>
+      <rect x="0" y="0" width="${W}" height="${yr}" fill="rgba(245,158,11,.07)"/>
+      <rect x="0" y="${yr}" width="${W}" height="${H - yr}" fill="rgba(34,197,94,.07)"/>
+      <line x1="0" x2="${W}" y1="${yr}" y2="${yr}" stroke="#cfe8ff" stroke-width="1.2" stroke-dasharray="5 4" opacity=".7" vector-effect="non-scaling-stroke"/>
+      <path d="${path}" fill="none" stroke="var(--amber)" stroke-width="2.2" clip-path="url(#${uid}-a)" vector-effect="non-scaling-stroke"/>
+      <path d="${path}" fill="none" stroke="var(--green)" stroke-width="2.2" clip-path="url(#${uid}-b)" vector-effect="non-scaling-stroke"/>
+    </svg></div>`;
+}
+
 function glBox(label, value, unit, tone = "") {
   return `<div class="gl-box ${tone}"><span class="gl-box-l">${h(label)}</span>
     <span class="gl-box-v">${value}<small>${h(unit || "")}</small></span></div>`;
@@ -4587,11 +4638,36 @@ function glWakeVideo(on) {
   }
 }
 function glWakeWanted() { return glanceTab === "live" && glanceVisible() && !document.hidden; }
+// Watch-face dimming: after GL_DIM_MS on the Live page with no touch, all
+// but the key readings (speed, gear, the trip figures, power, battery) fade
+// to about a third, as a watch's always-on face does. On an OLED iPhone a
+// dimmer pixel draws less power. A tap brings it all back for another spell.
+//
+// On by default every time the app opens. The chip at the bottom of the page
+// switches it to "always bright" for the rest of that visit — for a phone on
+// a cable in the car; reopening the app goes back to auto-dim.
+const GL_DIM_MS = 15000;
+const GL_BRAKE_KMH_S = 10;   // about 0.28 g: firmer than the strongest regen
+let glDimTimer = null;
+const glDim = { off: false };
+function glDimAllowed() { return !glDim.off; }
+// While the brake pedal is held the screen stays bright with no countdown
+// (a wait at the lights); the 15 s start when it is let go.
+let glDimHold = false;
+function glDimArm() {
+  clearTimeout(glDimTimer);
+  glDimTimer = null;
+  document.body.classList.remove("gl-dim");
+  if (!glDimAllowed() || glDimHold) return;
+  glDimTimer = setTimeout(() => { if (glWakeWanted() && glDimAllowed()) document.body.classList.add("gl-dim"); }, GL_DIM_MS);
+}
 async function glWakeSync() {
   const want = glWakeWanted();
   // While the Live page holds the screen on, the decorative loops stop (see
   // .gl-eco in style.css): measured, they were nine-tenths of the page's work.
   document.body.classList.toggle("gl-eco", want);
+  if (!want || !glDimAllowed()) { clearTimeout(glDimTimer); glDimTimer = null; document.body.classList.remove("gl-dim"); }
+  else if (!glDimTimer && !glDimHold && !document.body.classList.contains("gl-dim")) glDimArm();
   if (glWakeIOS) glWakeVideo(want);
   if (want && !glWake.lock && glWake.supported) {
     try {
@@ -4606,7 +4682,7 @@ async function glWakeSync() {
 }
 // A tap counts as the gesture iOS wants before it plays media, and lets a
 // refused Wake Lock be asked for again.
-document.addEventListener("pointerdown", () => { if (glWakeWanted()) { glWake.failed = false; glWakeSync(); } }, { passive: true });
+document.addEventListener("pointerdown", () => { if (glWakeWanted()) { glWake.failed = false; glDimArm(); glWakeSync(); } }, { passive: true });
 document.addEventListener("visibilitychange", () => { glWakeSync(); });
 window.addEventListener("orientationchange", () => setTimeout(glWakeSync, 400));
 // Turned sideways: connect the stream (and fetch once) now rather than on the
@@ -4623,8 +4699,9 @@ window.addEventListener("resize", () => setTimeout(glWakeSync, 400));
 function glLiveApply(L) {
   const nw = L.now || {};
   const p = glLiveState.prev;
-  // Pack power, when the car streams voltage and current: the power this
-  // second, discharge positive (the server learns the car's sign).
+  // Power and Wh/km from the energy reading over 20 s or more: the fallback
+  // when the car does not stream pack voltage and current (then power_kw,
+  // below, replaces it every second).
   if (L.driving && p && nw.ts && nw.ts - p.ts >= 20 && nw.energy_kwh != null && p.energy_kwh != null) {
     const dkwh = p.energy_kwh - nw.energy_kwh, dkm = (nw.odo_km || 0) - (p.odo_km || 0);
     const hours = (nw.ts - p.ts) / 3600;
@@ -4651,8 +4728,29 @@ function glLiveApply(L) {
     if (v != null) h.push({ t: now, v });
     const old = h.length ? h[0].v : null;
     glLiveState.acc = v == null || old == null ? 0 : v - old > 2 ? 1 : v - old < -2 ? -1 : 0;
+    // Braking wakes a dimmed screen. Lifting off in one-pedal driving slows
+    // the car by up to about 0.2-0.25 g (7-9 km/h each second), so only a
+    // faster drop counts as the brake pedal: GL_BRAKE_KMH_S, timed by the
+    // car's own record times. Coming to a stop or changing gear wakes it too.
+    const lv = glLiveState.lastV, lt = glLiveState.lastT, ls = glLiveState.lastShift;
+    const dt = nw.ts && lt ? nw.ts - lt : 0;
+    // Only while the pedal is unknown: once the car streams BrakePedal (the
+    // relay's level-3 set), the pedal alone decides.
+    const braking = nw.brake == null && v != null && lv != null && dt >= 0.5 && dt <= 2.5
+      && (lv - v) / dt >= GL_BRAKE_KMH_S;
+    // The pedal itself, when the car streams it, is the surest sign of all.
+    // Every reading of the pedal down keeps the screen bright (so a missed
+    // release can never leave a later press unseen); letting it go starts
+    // the 15 s afresh.
+    const wasHeld = glDimHold;
+    glDimHold = nw.brake === true && nw.shift !== "P";
+    if (glDimHold || (wasHeld && !glDimHold) || braking || (v === 0 && lv > 0)
+        || (nw.shift && ls && nw.shift !== ls)) glDimArm();
+    if (v != null && nw.ts) { glLiveState.lastV = v; glLiveState.lastT = nw.ts; }
+    if (nw.shift) glLiveState.lastShift = nw.shift;
   }
   glLiveState.data = L;
+  glLiveState.recvAt = Date.now();
   // Kept on the phone so the next time it is turned sideways the page opens
   // on the last reading, not on an empty frame waiting for the stream.
   if (Date.now() - (glLiveState.saved || 0) > 5000) {
@@ -4673,6 +4771,33 @@ function glLiveApply(L) {
   } else if (!L.driving) glLiveState.hist = [];
   glLiveDraw();
 }
+
+// Readings running late. The car holds its readings while its mobile signal
+// is weak and sends them in a burst when it reconnects (seen: 30-90 s late),
+// so a quiet stream mid-drive means the screen is behind, not that nothing
+// changed. Checked every second between frames: past GL_STALE_S the speed
+// greys and a chip says so, until readings catch up.
+const GL_STALE_S = 5;
+setInterval(() => {
+  const L = glLiveState.data, nw = L && L.now;
+  if (document.hidden) return;
+  // Not while stopped: a car standing still with nothing changing sends
+  // nothing, which is not a weak signal.
+  const live = glanceTab === "live" && glanceVisible() && L && L.driving && nw && nw.age_sec != null
+    && !(nw.speed_kmh === 0 || nw.brake === true);
+  const age = live ? nw.age_sec + (Date.now() - (glLiveState.recvAt || Date.now())) / 1000 : 0;
+  const stale = !!live && age > GL_STALE_S;
+  if (stale !== document.body.classList.contains("gl-stale")) {
+    document.body.classList.toggle("gl-stale", stale);
+    glFootFit(document);
+  }
+  // The "updated Ns ago" line keeps counting between frames too.
+  if (live && age < 120) {
+    const el = document.querySelector(".glance .gl-live");
+    const txt = el && el.lastChild;
+    if (txt && txt.nodeType === 3) txt.textContent = `live · updated ${Math.round(age)}s ago`;
+  }
+}, 1000);
 
 // Frames can arrive several times a second; one redraw serves them all, at
 // most about eight a second, so a busy stream does not cost the phone layout
@@ -4798,11 +4923,10 @@ function renderGlance(d) {
         : t ? (fresh ? `live · updated ${nw.age_sec}s ago` : `drive open · last heard ${Math.round(nw.age_sec / 60)} min ago`)
         : "parked · no drive in progress";
       const foot = `<span class="gl-live ${t && fresh ? "on" : ""}"><b></b>${h(status)}</span>
-        ${(glWakeIOS ? glWake.videoOn : glWake.lock) ? '<span class="gl-chip">screen kept on</span>'
-          : '<span class="gl-chip tone-warn">tap to keep screen on</span>'}
-        ${nw.out_temp != null ? `<span class="gl-chip">${n(nw.out_temp, 0)}°C outside</span>` : ""}
-        ${nw.climate_on ? '<span class="gl-chip">climate on</span>' : ""}
-        ${t && t.eta ? `<span class="gl-chip">ETA ${h(t.eta.place)} ${n(t.eta.eta_min)} min</span>` : ""}`;
+        <button type="button" class="gl-chip gl-dimchip" data-gl-dim>${glDim.off ? "Always Bright" : "Auto Dim"}</button>
+        ${nw.out_temp != null ? `<span class="gl-chip gl-opt">${n(nw.out_temp, 0)}°C outside</span>` : ""}
+        ${nw.climate_on ? '<span class="gl-chip gl-opt">climate on</span>' : ""}
+        ${t && t.eta ? `<span class="gl-chip gl-opt">ETA ${h(t.eta.place)} ${n(t.eta.eta_min)} min</span>` : ""}`;
       const ico = {
         dist: '<path d="M4 18 10 6l4 8 2-4 4 8"/>',
         time: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>',
@@ -4812,9 +4936,11 @@ function renderGlance(d) {
         range: '<path d="M12 21s-6-5.6-6-11a6 6 0 0 1 12 0c0 5.4-6 11-6 11Z"/><circle cx="12" cy="10" r="2.2"/>',
         odo: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10v4M11 10v4M15 10v4"/>',
       };
-      const tile = (k, label, value, unit, tone = "", cls = "") => `<div class="gl-rt ${tone} ${cls}">
+      // The unit is the tile's label (km, min, Wh/km), so the number alone
+      // fills the width and can be drawn much larger.
+      const tile = (k, label, value, tone = "", cls = "") => `<div class="gl-rt ${tone} ${cls}">
           <i><svg viewBox="0 0 24 24" aria-hidden="true">${ico[k]}</svg></i>
-          <span>${h(label)}</span><strong>${value}<small>${h(unit)}</small></strong></div>`;
+          <span>${h(label)}</span><strong>${value}</strong></div>`;
       const pct = lvl != null ? Math.max(0, Math.min(100, +lvl)) : null;
       if (!t) {
         // Parked: the car now on the left, the last drive on the right, in the
@@ -4834,19 +4960,19 @@ function renderGlance(d) {
           `<div class="gl-trip">
             <div class="gl-trip-h"><b class="rec idle"></b>Car now<em>${!L ? "connecting…" : nw.age_sec != null ? `${nw.age_sec < 90 ? nw.age_sec + "s" : Math.round(nw.age_sec / 60) + " min"} ago` : ""}</em></div>
             <div class="gl-rts">
-              ${tile("batt", "Batt", pctShown != null ? n(pctShown, 1) : "—", "%", pctShown != null && pctShown < 20 ? "warn" : "good")}
-              ${tile("range", "Range", rangeShown != null ? n(rangeShown) : "—", "km")}
-              ${tile("odo", "Odometer", odo != null ? fmt(odo) : "—", "km", "", "wide")}
+              ${tile("batt", "Batt %", pctShown != null ? n(pctShown, 1) : "—", pctShown != null && pctShown < 20 ? "warn" : "good")}
+              ${tile("range", "Range km", rangeShown != null ? n(rangeShown) : "—")}
+              ${tile("odo", "Odometer km", odo != null ? fmt(odo) : "—", "", "wide")}
             </div>
           </div>`,
           glSpeedo({ value: spd, max: 160, gear: nw.shift, acc: glLiveState.acc, label: "Speed" }),
           lt ? `<div class="gl-trip">
             <div class="gl-trip-h">Last trip<em>${lt.id != null ? "#" + lt.id + " · " : ""}${h(tripWhen(lt.start_time).split(" ").pop())}</em></div>
             <div class="gl-rts">
-              ${tile("dist", "Dist", n(lt.distance_km, 1), "km")}
-              ${tile("time", "Time", n(lt.duration_min), "min")}
-              ${tile("speed", "Avg", lt.avg_speed_kmh != null ? n(lt.avg_speed_kmh) : "—", "km/h")}
-              ${tile("whkm", "Use", n(lt.wh_per_km), "Wh/km", ltTone)}
+              ${tile("dist", "km", n(lt.distance_km, 1))}
+              ${tile("time", "min", n(lt.duration_min))}
+              ${tile("speed", "Avg km/h", lt.avg_speed_kmh != null ? n(lt.avg_speed_kmh) : "—")}
+              ${tile("whkm", "Wh/km", n(lt.wh_per_km), ltTone)}
             </div>
           </div>` : "",
           foot);
@@ -4857,6 +4983,11 @@ function renderGlance(d) {
       // the last few minutes and a battery bar, so neither side repeats the
       // Drive page's LED meters.
       const kw = inst && inst.kw != null ? inst.kw : null;
+      // How far the energy left would go at this drive's Wh/km, beside the
+      // car's own rated figure; and what braking has put back this drive.
+      const rangeHere = nw.energy_kwh != null && tw > 0 ? nw.energy_kwh * 1000 / tw : null;
+      const regenPct = t.regen_kwh > 0 && t.energy_kwh > 0
+        ? t.regen_kwh / (t.energy_kwh + t.regen_kwh) * 100 : null;
       const kwMin = -60, kwMax = 150, zero = -kwMin / (kwMax - kwMin) * 100;
       const kwPos = kw == null ? null : Math.max(0, Math.min(100, (kw - kwMin) / (kwMax - kwMin) * 100));
       const powerBar = `<div class="gl-power">
@@ -4867,14 +4998,21 @@ function renderGlance(d) {
               style="left:${Math.min(zero, kwPos).toFixed(1)}%;width:${Math.abs(kwPos - zero).toFixed(1)}%"></i>`}
             <b style="left:${zero.toFixed(1)}%"></b></div>
           <div class="gl-power-scale"><span>regen</span><span>0</span><span>${kwMax} kW</span></div>
-          ${inst && inst.whkm != null ? `<div class="gl-power-sub">${n(inst.whkm)} Wh/km right now</div>` : ""}
+          <div class="gl-minis">
+            <div class="gl-mini"><span>Est. range</span>
+              <div><strong>${rangeHere != null ? n(rangeHere) : "—"}<small>km</small></strong>
+              <em>${nw.range_km != null ? `rated ${n(nw.range_km)}` : ""}</em></div></div>
+            <div class="gl-mini regen"><span>Regen</span>
+              <div><strong>${t.regen_kwh != null ? n(t.regen_kwh, 2) : "—"}<small>kWh</small></strong>
+              <em>${regenPct != null ? `${n(regenPct)}%` : ""}</em></div></div>
+          </div>
         </div>`;
       // The car's battery % moves in whole steps, which barely register on a short
       // drive: take the larger of that and the energy used over the pack size.
       const packKwh = lastData && lastData.vehicle && lastData.vehicle.usable_capacity_kwh;
       const usedPct = Math.max(+t.soc_used || 0, packKwh && t.energy_kwh > 0 ? t.energy_kwh / packKwh * 100 : 0);
       const battBar = `<div class="gl-battbar">
-          <div class="gl-battbar-top"><span>Battery</span><strong>${pct == null ? "—" : n(pct, 1)}<small>%</small></strong></div>
+          <div class="gl-battbar-top"><span>Battery${nw.range_km != null ? `<em class="gl-rated">rated ${n(nw.range_km)}<i class="gl-wide-only"> km</i></em>` : ""}</span><strong>${pct == null ? "—" : n(pct, 1)}<small>%</small></strong></div>
           <div class="gl-battbar-cell"><i style="width:${pct ?? 0}%;background:${(pct ?? 0) < 20 ? "#ff6b70" : "var(--green)"}"></i></div>
           <div class="gl-power-sub">used ${n(usedPct, 1)}% this drive · ${n(t.energy_kwh, 2)} kWh</div></div>`;
       const twTone = rated && tw ? (tw > rated ? "warn" : "good") : "";
@@ -4883,17 +5021,17 @@ function renderGlance(d) {
         `<div class="gl-trip">
           <div class="gl-trip-h"><b class="rec"></b>Trip computer<em>since ${h(tripWhen(t.start_time).split(" ").pop())}</em></div>
           <div class="gl-rts">
-            ${tile("dist", "Dist", n(t.distance_km, 1), "km")}
-            ${tile("time", "Time", n(t.duration_min), "min")}
-            ${tile("speed", "Avg", n(t.avg_speed_kmh), "km/h")}
-            ${tile("whkm", "Use", n(tw), "Wh/km", twTone)}
+            ${tile("dist", "km", n(t.distance_km, 1))}
+            ${tile("time", "min", n(t.duration_min))}
+            ${tile("speed", "Avg km/h", n(t.avg_speed_kmh))}
+            ${tile("whkm", "Wh/km", n(tw), twTone)}
           </div>
-          <div class="gl-odo"><i><svg viewBox="0 0 24 24" aria-hidden="true">${ico.odo}</svg></i><span>Odometer</span>
-            <strong>${odoNow != null ? n(odoNow, 1) : "—"}<small>km</small></strong></div>
+          <div class="gl-odo"><i><svg viewBox="0 0 24 24" aria-hidden="true">${ico.odo}</svg></i><span>Odometer km</span>
+            <strong>${odoNow != null ? n(odoNow, 1) : "—"}</strong></div>
         </div>`,
         glSpeedo({ value: spd, max: 160, mark: t.max_speed_kmh, gear: nw.shift, acc: glLiveState.acc, label: "Speed" }),
         `${powerBar}
-         ${glTrace(glLiveState.hist)}
+         ${glEffTrace(glLiveState.hist, rated)}
          ${battBar}`,
         foot);
     },
@@ -5068,6 +5206,7 @@ function renderGlance(d) {
       <span class="gl-sub">${h(glanceTab === "live"
         ? (glLiveState.data && glLiveState.data.driving ? `drive since ${tripWhen(glLiveState.data.trip.start_time)}` : "right now")
         : (d.window_label || `${d.window_days}-day window`))}</span>
+      ${glanceTab === "live" ? '<span class="gl-chip tone-warn gl-stalechip">Car Signal Weak · Catching Up</span>' : ""}
       <button type="button" class="gl-swap" data-gl-swap title="Move the tabs to the other side"
         aria-label="Move the tabs to the other side"><svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M7 7h13M17 4l3 3-3 3M17 17H4M7 14l-3 3 3 3"/></svg></button>
@@ -5090,16 +5229,33 @@ window.addEventListener("resize", () => {
     if (el && glanceVisible()) glFit(el);
   }, 150);
 });
-const GL_FIT = ".gl-rt strong, .gl-odo, .gl-rt span, .gl-trip-h, .gl-power-top, .gl-battbar-top, .gl-power-sub, .gl-box-v, .gl-foot .gl-chip";
+const GL_FIT = ".gl-rt strong, .gl-odo, .gl-rt span, .gl-trip-h, .gl-power-top, .gl-battbar-top, .gl-power-sub, .gl-mini > div, .gl-trace-h, .gl-box-v, .gl-foot .gl-chip";
+// Shrink each figure or label that overflows its box. All the measuring is
+// done before any size is set, so the page lays out once per redraw instead
+// of once per adjusted element: text width scales with font size, so one
+// reading gives the size that fits. Run every second on the Live page.
+// The bottom line stays one row: optional chips (temperature, climate, ETA)
+// step aside from the end until the rest fits.
+function glFootFit(root) {
+  const f = (root || document).querySelector(".glance .gl-foot");
+  if (!f) return;
+  const opt = [...f.querySelectorAll(".gl-opt")];
+  opt.forEach((e) => { e.style.display = ""; });
+  for (let i = opt.length - 1; i >= 0 && f.scrollWidth > f.clientWidth + 1; i--) opt[i].style.display = "none";
+}
 function glFit(root) {
-  root.querySelectorAll(GL_FIT).forEach((e) => {
-    e.style.fontSize = "";
-    let fs = parseFloat(getComputedStyle(e).fontSize), n = 0;
-    while (e.scrollWidth > e.clientWidth + 1 && fs > 8 && n++ < 10) {
-      fs *= 0.92;
-      e.style.fontSize = fs.toFixed(1) + "px";
+  const els = [...root.querySelectorAll(GL_FIT)];
+  for (const e of els) if (e.style.fontSize) e.style.fontSize = "";
+  const fix = [];
+  for (const e of els) {
+    const sw = e.scrollWidth, cw = e.clientWidth;
+    if (sw > cw + 1 && cw > 0) {
+      const fs = parseFloat(getComputedStyle(e).fontSize);
+      fix.push([e, Math.max(8, fs * cw / sw * 0.97)]);
     }
-  });
+  }
+  for (const [e, fs] of fix) e.style.fontSize = fs.toFixed(1) + "px";
+  glFootFit(root);
 }
 
 document.addEventListener("click", (e) => {
@@ -5109,6 +5265,12 @@ document.addEventListener("click", (e) => {
     glSave("glanceTab", glanceTab);
     if (lastData) renderGlance(lastData);
     if (glanceTab === "live") glLivePoll(); else glWakeSync();
+    return;
+  }
+  if (e.target.closest("[data-gl-dim]")) {
+    glDim.off = !glDim.off;
+    glDimArm();
+    if (lastData) renderGlance(lastData);
     return;
   }
   if (e.target.closest("[data-gl-swap]")) {
