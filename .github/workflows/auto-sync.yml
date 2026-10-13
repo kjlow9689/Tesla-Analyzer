@@ -1,0 +1,22 @@
+name: Auto-sync from chuahph
+
+# Added in Kelvin's fork only. chuahph's own sync-fork.yml never ran on its
+# schedule here, so this one pulls his latest main in every hour. It uses the
+# same merge as the "Sync fork" button: Kelvin's key commit is kept, and a real
+# clash fails the run (GitHub emails) instead of overwriting anything.
+
+on:
+  schedule:
+    - cron: "41 * * * *"   # hourly, at :41
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh api -X POST "repos/${{ github.repository }}/merge-upstream" -f branch=main
+        env:
+          GH_TOKEN: ${{ github.token }}
