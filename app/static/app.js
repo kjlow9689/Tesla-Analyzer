@@ -306,7 +306,12 @@ function renderScore(d) {
     `Lower Wh/km (gentler speed, smoother acceleration, less climate use) lifts it.`;
   el.className = `score-banner tone-${scoreTone(s)}`;
   el.innerHTML =
-    `<div class="score-ring">${s}<span>/100</span></div>` +
+    // A ring gauge, the same family as the Glance dials.
+    `<div class="score-ring"><svg viewBox="0 0 100 100" aria-hidden="true">` +
+    `<circle class="sr-track" cx="50" cy="50" r="42" pathLength="100"/>` +
+    `<circle class="sr-ticks" cx="50" cy="50" r="48" pathLength="100"/>` +
+    `<circle class="sr-fill" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="${Math.max(0, Math.min(100, s))} 100"/>` +
+    `</svg><b>${s}</b><span>/100</span></div>` +
     `<div class="score-text">` +
     `<div class="score-grade">Driving score: grade ${grade}` +
     `<button class="info-btn" data-info="score-info">!</button></div>` +
@@ -342,6 +347,64 @@ async function openCar(vin) {
   }
   showCar();
   await load();
+  showOrientHint();
+}
+
+// After a car is opened: a short card showing the two ways to hold the phone —
+// sideways for the live dashboard, upright for the full data. Shown every time
+// until "don't show again" is ticked, only when the phone is upright, and gone
+// the moment it is turned sideways.
+const ORIENT_KEY = "orientHintOff";
+function showOrientHint() {
+  let off = false;
+  try { off = localStorage.getItem(ORIENT_KEY) === "1"; } catch (_) { /* private mode */ }
+  if (off || glanceVisible() || document.getElementById("orient-hint")) return;
+  const el = document.createElement("div");
+  el.id = "orient-hint";
+  el.setAttribute("role", "dialog");
+  el.setAttribute("aria-label", "How to view your car");
+  el.innerHTML = `<div class="oh-card">
+      <div class="oh-title">Two ways to view</div>
+      <div class="oh-row">
+        <div class="oh-item">
+          <svg class="oh-phone land" viewBox="0 0 96 60" aria-hidden="true">
+            <rect x="2" y="6" width="92" height="48" rx="8" class="oh-body"/>
+            <path d="M24 44a20 20 0 0 1 48 0" class="oh-arc"/><path d="M48 44l12-16" class="oh-needle"/>
+            <rect x="9" y="16" width="14" height="9" rx="2" class="oh-tile"/><rect x="9" y="29" width="14" height="9" rx="2" class="oh-tile"/>
+            <rect x="73" y="16" width="14" height="9" rx="2" class="oh-tile"/><rect x="73" y="29" width="14" height="9" rx="2" class="oh-tile"/>
+          </svg>
+          <b>Sideways</b><span>Live dashboard: speed, trip and power, updating every second</span>
+        </div>
+        <div class="oh-item">
+          <svg class="oh-phone port" viewBox="0 0 60 96" aria-hidden="true">
+            <rect x="6" y="2" width="48" height="92" rx="8" class="oh-body"/>
+            <circle cx="30" cy="22" r="9" class="oh-arc"/>
+            <rect x="13" y="38" width="15" height="11" rx="2" class="oh-tile"/><rect x="32" y="38" width="15" height="11" rx="2" class="oh-tile"/>
+            <rect x="13" y="53" width="15" height="11" rx="2" class="oh-tile"/><rect x="32" y="53" width="15" height="11" rx="2" class="oh-tile"/>
+            <rect x="13" y="68" width="34" height="18" rx="2" class="oh-tile"/>
+          </svg>
+          <b>Upright</b><span>Full data: score, trips, charges and charts</span>
+        </div>
+      </div>
+      <div class="oh-actions">
+        <label class="oh-never"><input type="checkbox"> Don't show again</label>
+        <button type="button" class="oh-ok">Got it</button>
+      </div>
+      <i class="oh-timer"></i>
+    </div>`;
+  document.body.appendChild(el);
+  const close = () => {
+    const never = el.querySelector(".oh-never input");
+    if (never && never.checked) { try { localStorage.setItem(ORIENT_KEY, "1"); } catch (_) { /* private mode */ } }
+    el.classList.add("out");
+    clearTimeout(timer);
+    window.removeEventListener("resize", onTurn);
+    setTimeout(() => el.remove(), 250);
+  };
+  const onTurn = () => { if (glanceVisible()) close(); };
+  const timer = setTimeout(close, 12000);
+  window.addEventListener("resize", onTurn);
+  el.addEventListener("click", (e) => { if (e.target === el || e.target.closest(".oh-ok")) close(); });
 }
 
 // Tesla's own exterior paint names — vehicle.trim is seeded server-side
@@ -413,6 +476,16 @@ function carCard(car) {
   const go = document.createElement("span");
   go.className = "car-card-go";
   go.textContent = "›";
+  // What the car is doing now, filled in by homeLive() below: a dot that is
+  // lit while the car is streaming, the battery as a small bar, the state.
+  if (realVin) {
+    btn.dataset.vin = car.vin;
+    const live = document.createElement("span");
+    live.className = "car-card-live";
+    live.innerHTML = '<b class="cl-dot"></b><span class="cl-txt">checking…</span>' +
+      '<span class="cl-bat" hidden><i></i></span>';
+    main.append(live);
+  }
   btn.append(ico, main, go);
   btn.addEventListener("click", () => openCar(car.vin));
   return btn;
@@ -444,6 +517,11 @@ async function renderHome() {
   document.getElementById("btn-compare")?.classList.toggle(
     "hidden", STATIC_MODE || mode !== "live" || list.length < 2);
 
+  // An odd number of action tiles: the last one takes the whole row.
+  const tiles = [...document.querySelectorAll(".home-actions .btn:not(#btn-link):not(.hidden)")];
+  tiles.forEach((b) => b.classList.remove("ha-wide"));
+  if (tiles.length % 2 === 1) tiles[tiles.length - 1].classList.add("ha-wide");
+
   cars.innerHTML = "";
   if (!list.length) {
     const p = document.createElement("p");
@@ -453,6 +531,33 @@ async function renderHome() {
     return;
   }
   for (const c of list) cars.appendChild(carCard(c));
+  homeLive();
+}
+
+// The live line on each car card, from the same memory-only endpoint the Live
+// page uses (no database read). Refreshed every few seconds while the garage
+// page is showing.
+let homeLiveTimer = null;
+async function homeLive() {
+  clearTimeout(homeLiveTimer);
+  if (STATIC_MODE || !document.body.classList.contains("view-home")) return;
+  for (const card of document.querySelectorAll("#home-cars .car-card[data-vin]")) {
+    const txt = card.querySelector(".cl-txt"), dot = card.querySelector(".cl-dot");
+    const bat = card.querySelector(".cl-bat");
+    try {
+      const L = await (await fetch("/api/live?vin=" + encodeURIComponent(card.dataset.vin))).json();
+      const nw = L.now;
+      if (!nw) { txt.textContent = "no live data yet"; dot.className = "cl-dot"; bat.hidden = true; continue; }
+      const lvl = nw.battery_level ?? nw.soc;
+      const fresh = nw.age_sec != null && nw.age_sec < 120;
+      const state = L.driving ? "driving" : fresh ? "parked, awake" : "asleep";
+      txt.textContent = [state, lvl != null ? `${fmt(lvl, 1)}%` : "", nw.range_km != null ? `${fmt(nw.range_km)} km` : ""]
+        .filter(Boolean).join(" · ");
+      dot.className = "cl-dot" + (L.driving ? " drive" : fresh ? " on" : "");
+      if (lvl != null) { bat.hidden = false; bat.firstElementChild.style.width = Math.max(0, Math.min(100, lvl)) + "%"; }
+    } catch (_) { txt.textContent = ""; }
+  }
+  homeLiveTimer = setTimeout(homeLive, 4000);
 }
 
 document.getElementById("btn-home")?.addEventListener("click", showHome);
@@ -3817,6 +3922,7 @@ async function load() {
     renderAssessment(d.assessment, d.currency);
     renderRecommendations(d.recommendations, d.currency);
     renderQuickNav();
+    renderGlance(d);
 
     const now = new Date();
     const windowText = d.window_label || `${d.window_days}-day window`;
@@ -3992,7 +4098,7 @@ document.getElementById("show-more-kpis")?.addEventListener("click", () => {
 // change.
 document.getElementById("quick-nav")?.addEventListener("click", (e) => {
   const btn = e.target.closest(".qn-btn");
-  if (!btn) return;
+  if (!btn || btn.hasAttribute("data-glance")) return;
   if (btn.hasAttribute("data-scroll-top")) {
     window.scrollTo({ top: 0, behavior: "smooth" });
     return;
@@ -4007,6 +4113,1015 @@ document.getElementById("quick-nav")?.addEventListener("click", (e) => {
 // Show only the shortcuts whose target card is actually on screen right now
 // (Battery Health, Efficiency and Charging cards all hide themselves when
 // their data isn't available) — a shortcut to a hidden card would be dead.
+// --- Glance: the window on one landscape screen ---------------------------
+// An instrument cluster drawn as plain SVG from the same /summary payload the
+// cards use, so it costs no chart instances and redraws instantly on rotate.
+// A cluster dial: a 240° sweep with ticks, coloured bands, a needle and an
+// optional marker (e.g. the rated line). Drawn on a 200x200 box.
+// The robotic frame: an armour plate at each corner (one drawing, mirrored),
+// riveted, with a lit seam and a status light; LED strips along the top and
+// bottom, vent slots up the sides. Decoration only, behind the content.
+const GL_CORNER = `<svg viewBox="0 0 150 96" aria-hidden="true">
+  <defs>
+    <linearGradient id="glPlate" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b4554"/><stop offset=".35" stop-color="#1c232d"/>
+      <stop offset=".7" stop-color="#121820"/><stop offset="1" stop-color="#262e39"/></linearGradient>
+    <linearGradient id="glEdge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8a96a8"/><stop offset="1" stop-color="#2a313c"/></linearGradient>
+  </defs>
+  <path d="M0 0H150L132 10H40L22 28V78L10 96H0Z" fill="url(#glPlate)" stroke="url(#glEdge)" stroke-width="1.2"/>
+  <path d="M6 6H118L108 12H38L18 32V74L10 86H6Z" fill="none" stroke="#05070a" stroke-width="1" opacity=".8"/>
+  <path class="seam" d="M30 16H124M16 36V70" fill="none" stroke-width="2" stroke-linecap="round"/>
+  <g fill="#0a0d12" stroke="#5a6574" stroke-width=".8">
+    <circle cx="12" cy="12" r="3"/><circle cx="60" cy="5" r="2.2"/><circle cx="5" cy="58" r="2.2"/></g>
+  <g stroke="#07090c" stroke-width="1.6">
+    <path d="M84 3l-4 5M90 3l-4 5M96 3l-4 5M102 3l-4 5"/></g>
+  <circle class="led" cx="12" cy="12" r="1.6"/>
+  <rect class="led2" x="27" y="21" width="9" height="3" rx="1"/>
+</svg>`;
+const GL_FRAME = `<div class="gl-frame" aria-hidden="true">
+  <i class="c tl">${GL_CORNER}</i><i class="c tr">${GL_CORNER}</i>
+  <i class="c bl">${GL_CORNER}</i><i class="c br">${GL_CORNER}</i>
+  <i class="strip top"></i><i class="strip bot"></i>
+  <i class="vent l"></i><i class="vent r"></i>
+</div>`;
+
+// The Live page's speedometer, not a dial: a wide angular panel with the speed
+// in very large digits, a gear selector on top, chevrons either side that light
+// in steps as the speed rises, and a bar of slanted LED segments underneath
+// (cyan, amber above 110, red above 140) with a pointer on the current speed and
+// the drive's top speed as a white tick.
+function glSpeedo({ value, max = 160, mark = null, gear = null, acc = 0, label = "Speed" }) {
+  const uid = `gls${++glDialSeq}`;
+  const has = value != null && Number.isFinite(+value);
+  const v = has ? +value : 0;
+  // A colour for each speed band, so the panel changes as the car speeds up
+  // through town, main road and highway speeds, not only past 110.
+  const colourAt = (x) => (x > 140 ? "#ff6b70" : x > 120 ? "#fb923c" : x > 100 ? "#facc15"
+    : x > 80 ? "#a3e635" : x > 60 ? "#34d399" : x > 30 ? "#22d3ee" : "#38bdf8");
+  const X0 = 30, X1 = 230, N = 40, step = (X1 - X0) / N, BY = 186, BH = 15;
+  const xOf = (x) => X0 + Math.max(0, Math.min(max, x)) / max * (X1 - X0);
+  let segs = "";
+  for (let k = 0; k < N; k++) {
+    const x = X0 + k * step, mid = (k + 0.5) / N * max;
+    const lit = has && v > 0.5 && mid <= v + max / N / 2;
+    segs += `<polygon points="${(x + 2.6).toFixed(1)},${BY} ${(x + step - 0.8).toFixed(1)},${BY} ${(x + step - 3.4).toFixed(1)},${BY + BH} ${x.toFixed(1)},${BY + BH}"
+      fill="${lit ? colourAt(mid) : "#111a26"}"/>`;
+  }
+  let labels = "";
+  for (let t = 0; t <= max + 1e-9; t += 40) {
+    labels += `<text x="${xOf(t).toFixed(1)}" y="${BY + BH + 12}" text-anchor="middle" font-size="8" font-weight="600" fill="#6f7f94">${Math.round(t)}</text>`;
+  }
+  const markTick = mark != null && mark > 0
+    ? `<line x1="${xOf(mark).toFixed(1)}" y1="${BY - 3}" x2="${xOf(mark).toFixed(1)}" y2="${BY + BH + 3}" stroke="#fff" stroke-width="2"/>` : "";
+  const pointer = has
+    ? `<polygon points="${xOf(v).toFixed(1)},${BY - 2} ${(xOf(v) - 4).toFixed(1)},${BY - 9} ${(xOf(v) + 4).toFixed(1)},${BY - 9}"
+        fill="${colourAt(v)}" filter="url(#${uid}-glow)"/>` : "";
+  // Chevrons: four on each side, one more lit for every 40 km/h.
+  const lit = has ? Math.min(4, Math.ceil(v / 40)) : 0;
+  let wings = "";
+  for (let k = 0; k < 4; k++) {
+    const on = k < lit, col = on ? colourAt(Math.min(max, (k + 1) * 40)) : "#16212f";
+    const dx = k * 7.5;
+    wings += `<polyline points="${50 - dx},${96} ${39 - dx},${124} ${50 - dx},${152}" fill="none" stroke="${col}" stroke-width="5"
+        stroke-linejoin="miter"${on ? ` filter="url(#${uid}-glow)"` : ""}/>
+      <polyline points="${210 + dx},${96} ${221 + dx},${124} ${210 + dx},${152}" fill="none" stroke="${col}" stroke-width="5"
+        stroke-linejoin="miter"${on ? ` filter="url(#${uid}-glow)"` : ""}/>`;
+  }
+  const num = has ? String(Math.round(v)) : "—";
+  const size = num.length >= 3 ? 72 : 98;
+  const gears = ["P", "R", "N", "D"].map((g, k) => {
+    const on = gear === g, gx = 130 - 21 + k * 14;
+    return `<text x="${gx}" y="40" text-anchor="middle" font-size="12" font-weight="${on ? 800 : 600}" fill="${on ? "#22d3ee" : "#3b4757"}"${on ? ` filter="url(#${uid}-glow)"` : ""}>${g}</text>
+      ${on ? `<rect x="${gx - 7}" y="29" width="15" height="15" rx="2" fill="none" stroke="#22d3ee" stroke-width="1" opacity=".85"/>` : ""}`;
+  }).join("");
+  // The edge answers to speed: the outline and the rails along the top and
+  // bottom take the speed's colour, and a column of small bars on each side
+  // fills from the bottom.
+  const frame = has && v > 0.5 ? colourAt(v) : "#22d3ee";
+  const EB = 14, ebLit = has ? Math.ceil(Math.min(max, v) / max * EB) : 0;
+  let edge = "";
+  for (let k = 0; k < EB; k++) {
+    const y = 206 - k * 11, on = k < ebLit, col = on ? colourAt((k + 0.5) / EB * max) : "#111a26";
+    edge += `<rect x="9.5" y="${y - 8}" width="4" height="8" rx="1" fill="${col}"${on ? ` filter="url(#${uid}-glow)"` : ""}/>
+      <rect x="246.5" y="${y - 8}" width="4" height="8" rx="1" fill="${col}"${on ? ` filter="url(#${uid}-glow)"` : ""}/>`;
+  }
+  return `<svg class="gl-dial gl-speedo" viewBox="0 0 260 240" role="img" aria-label="${h(label)} ${h(num)} km/h">
+    <defs>
+      <linearGradient id="${uid}-bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#14202f"/><stop offset=".6" stop-color="#0b121b"/><stop offset="1" stop-color="#070b11"/></linearGradient>
+      <filter id="${uid}-glow" x="-30%" y="-30%" width="160%" height="160%">
+        <feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <polygon points="30,8 230,8 252,30 252,210 230,232 30,232 8,210 8,30" fill="url(#${uid}-bg)" stroke="${frame}" stroke-width="1.8"
+      filter="url(#${uid}-glow)"/>
+    <polygon points="34,15 226,15 245,34 245,206 226,225 34,225 15,206 15,34" fill="none" stroke="rgba(34,211,238,.25)" stroke-width="1"/>
+    <path d="M8 44V30L30 8h26M204 8h26l22 22v14M252 196v14l-22 22h-26M56 232H30L8 210v-14" fill="none" stroke="#fff" stroke-width="2" opacity=".9"/>
+    <path d="M70 15h120M70 225h120" stroke="${frame}" stroke-width="2.4" opacity=".8"/>
+    ${edge}
+    ${gears}${wings}
+    <text x="130" y="${num.length >= 3 ? 140 : 150}" text-anchor="middle" font-size="${size}" font-weight="800" fill="#f4fbff"
+      filter="url(#${uid}-glow)" style="font-variant-numeric:tabular-nums">${num}</text>
+    <text x="130" y="166" text-anchor="middle" font-size="10" font-weight="650" letter-spacing="2" fill="#7e93ab">KM/H</text>
+    <g filter="url(#${uid}-glow)">${segs}</g>${markTick}${pointer}${labels}
+  </svg>`;
+}
+
+let glDialSeq = 0;
+function glDial({ value, min, max, step, bands = [], mark = null, centre, unit, sub,
+  colour = "var(--text)", label = "" }) {
+  const A0 = 150, SWEEP = 240, cx = 100, cy = 100;
+  const uid = `gld${++glDialSeq}`;
+  const clamp = (x) => Math.max(min, Math.min(max, x));
+  const ang = (x) => (A0 + (clamp(x) - min) / (max - min) * SWEEP) * Math.PI / 180;
+  const pt = (a, r) => [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  const arc = (from, to, r) => {
+    const [x1, y1] = pt(ang(from), r), [x2, y2] = pt(ang(to), r);
+    const large = (clamp(to) - clamp(from)) / (max - min) * SWEEP > 180 ? 1 : 0;
+    return `M${x1.toFixed(1)} ${y1.toFixed(1)} A${r} ${r} 0 ${large} 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`;
+  };
+  let ticks = "";
+  for (let t = min; t <= max + 1e-9; t += step) {
+    const major = Math.round((t - min) / step) % 2 === 0;
+    const [x1, y1] = pt(ang(t), major ? 70 : 74), [x2, y2] = pt(ang(t), 80);
+    ticks += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
+      stroke="${major ? "var(--muted)" : "var(--border-lift)"}" stroke-width="${major ? 2 : 1.2}"/>`;
+    // No numbers at the two ends: they sit beside the readout and crowd it.
+    if (major && t > min + 1e-9 && t < max - 1e-9) {
+      const [tx, ty] = pt(ang(t), 58);
+      ticks += `<text x="${tx.toFixed(1)}" y="${(ty + 3.5).toFixed(1)}" text-anchor="middle" font-size="9.5"
+        fill="var(--muted)">${Number.isInteger(step) ? Math.round(t) : +t.toFixed(1)}</text>`;
+    }
+  }
+  const bandArcs = bands.map((b) => `<path d="${arc(b.from, b.to, 87)}" fill="none" stroke="${b.colour}"
+      stroke-width="5" stroke-linecap="butt" opacity=".9"/>`).join("");
+  let markLine = "";
+  if (mark != null) {
+    const [x1, y1] = pt(ang(mark), 82), [x2, y2] = pt(ang(mark), 93);
+    markLine = `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
+      stroke="var(--text)" stroke-width="2.5"/>`;
+  }
+  let needle = "";
+  if (value != null && Number.isFinite(+value)) {
+    const a = ang(+value), [nx, ny] = pt(a, 76), [bx1, by1] = pt(a + Math.PI / 2, 4), [bx2, by2] = pt(a - Math.PI / 2, 4);
+    // The needle in two halves, lit and shaded along its length, over a
+    // drop shadow offset down-right; the hub is a domed cap.
+    const pts = (a1, a2) => `${nx.toFixed(1)},${ny.toFixed(1)} ${a1.toFixed(1)},${a2.toFixed(1)} ${cx},${cy}`;
+    needle = `<g filter="url(#${uid}-sh)">
+        <polygon points="${pts(bx1, by1)}" fill="${colour}"/>
+        <polygon points="${pts(bx2, by2)}" fill="${colour}"/>
+        <polygon points="${pts(bx2, by2)}" fill="#000" opacity=".28"/>
+      </g>
+      <circle cx="${cx}" cy="${cy}" r="9" fill="url(#${uid}-hub)" stroke="${colour}" stroke-width="1.6"
+        filter="url(#${uid}-sh)"/>
+      <circle cx="${cx - 2.5}" cy="${cy - 3}" r="2.6" fill="#fff" opacity=".35"/>`;
+  }
+  // A recessed face inside a bevelled metal rim, so the dial reads as an
+  // object with depth rather than lines on the page.
+  return `<svg class="gl-dial" viewBox="0 0 200 200" role="img" aria-label="${h(label)} ${h(centre)}">
+    <defs>
+      <radialGradient id="${uid}-face" cx="50%" cy="42%" r="60%">
+        <stop offset="0" stop-color="#1c2533"/><stop offset=".7" stop-color="#0f141c"/>
+        <stop offset="1" stop-color="#070a0f"/></radialGradient>
+      <linearGradient id="${uid}-rim" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#6b7686"/><stop offset=".45" stop-color="#2a313c"/>
+        <stop offset=".55" stop-color="#1a1f27"/><stop offset="1" stop-color="#4a5361"/></linearGradient>
+      <radialGradient id="${uid}-hub" cx="35%" cy="30%" r="75%">
+        <stop offset="0" stop-color="#4b5565"/><stop offset="1" stop-color="#0d1117"/></radialGradient>
+      <filter id="${uid}-sh" x="-30%" y="-30%" width="160%" height="160%">
+        <feDropShadow dx="1.6" dy="2.4" stdDeviation="1.6" flood-color="#000" flood-opacity=".7"/></filter>
+      <filter id="${uid}-glow" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <circle cx="100" cy="100" r="98" fill="url(#${uid}-rim)"/>
+    <circle cx="100" cy="100" r="93" fill="url(#${uid}-face)"/>
+    <circle cx="100" cy="100" r="93" fill="none" stroke="#000" stroke-opacity=".6" stroke-width="3"/>
+    <path d="M30 62 A78 78 0 0 1 170 62" fill="none" stroke="#fff" stroke-opacity=".06" stroke-width="10"/>
+    <path d="${arc(min, max, 87)}" fill="none" stroke="#05070a" stroke-width="7"/>
+    <g filter="url(#${uid}-glow)">${bandArcs}</g>${ticks}${markLine}${needle}
+    <text x="100" y="140" text-anchor="middle" font-size="26" font-weight="760" fill="var(--text)">${h(centre)}</text>
+    <text x="100" y="156" text-anchor="middle" font-size="10" fill="var(--muted)">${h(unit || "")}</text>
+    ${sub ? `<text x="100" y="171" text-anchor="middle" font-size="10" font-weight="650" fill="${sub.colour || "var(--muted)"}">${h(sub.text)}</text>` : ""}
+  </svg>`;
+}
+
+// Vertical bars with their values on top. HTML rather than SVG so the bars
+// stretch to whatever panel they are given; mark draws a dashed reference
+// line (e.g. rated Wh/km) labelled at its left end, clear of the bars.
+function glVBars(items, { mark = null, digits = 0 } = {}) {
+  const vals = items.map((it) => (Number.isFinite(+it.value) ? +it.value : null));
+  const top = Math.max(1, ...vals.filter((x) => x != null), mark || 0) * 1.15;
+  const pct = (x) => (x / top * 100).toFixed(1);
+  const cols = items.map((it, k) => {
+    const v = vals[k];
+    return `<div class="gl-vcol">
+      <div class="gl-vslot">${v == null ? "" : `<div class="gl-vbar" style="height:${pct(v)}%;background:${it.colour || "var(--accent-2)"}">
+        <span>${fmt(v, digits)}</span></div>`}</div>
+      <div class="gl-vlab">${h(it.label)}</div></div>`;
+  }).join("");
+  const m = mark ? `<div class="gl-vover"><div class="gl-vmark" style="bottom:${pct(mark)}%">
+      <span>rated ${fmt(mark)}</span></div></div>` : "";
+  return `<div class="gl-vbars"><div class="gl-vplot">${m}${cols}</div></div>`;
+}
+
+// Horizontal bars that grow from the rated line: left and green for below
+// rated, right and amber for above, each labelled with its Wh/km and its
+// difference. Bars from zero all look alike when every value is 150-180;
+// from the rated line the difference is the length.
+function glHBars(items, { mark, digits = 0 } = {}) {
+  const diffs = items.map((it) => (Number.isFinite(+it.value) && mark ? (+it.value - mark) / mark * 100 : null));
+  const span = Math.max(10, ...diffs.filter((x) => x != null).map(Math.abs)) * 1.1;
+  const rows = items.map((it, k) => {
+    const d = diffs[k], w = d == null ? 0 : Math.abs(d) / span * 50;
+    const bar = d == null ? "" : `<span class="gl-hbar ${d > 0 ? "up" : "down"}"
+      style="${d > 0 ? "left:50%" : `right:50%`};width:${w.toFixed(1)}%"></span>`;
+    return `<div class="gl-hrow"><span class="gl-hlab">${h(it.label)}</span>
+      <strong>${d == null ? "—" : fmt(+it.value, digits)} <small class="${d > 0 ? "tone-warn" : "tone-good"}">${
+        d == null ? "" : `${d > 0 ? "+" : ""}${fmt(d, 0)}%`}</small></strong>
+      <span class="gl-htrack">${bar}<i class="gl-hmark"></i></span></div>`;
+  }).join("");
+  return `<div class="gl-hbars">${rows}
+    <div class="gl-hnote"><span>◂ better</span><span>rated ${fmt(mark)}</span><span>worse ▸</span></div></div>`;
+}
+
+// --- More shapes, so no two Glance pages look alike ----------------------
+let glSvgSeq = 0;
+const glPolar = (cx, cy, r, deg) => {
+  const a = (deg - 90) * Math.PI / 180;
+  return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+};
+function glArcPath(cx, cy, r, a0, a1) {
+  const [x0, y0] = glPolar(cx, cy, r, a0), [x1, y1] = glPolar(cx, cy, r, a1);
+  return `M${x0.toFixed(1)} ${y0.toFixed(1)} A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+}
+
+// A 180-degree gauge with a bright fill arc rather than a needle.
+function glHalf({ value, min, max, bands = [], centre, unit, sub, colour }) {
+  const id = `gh${++glSvgSeq}`, cl = (x) => Math.max(min, Math.min(max, x));
+  const deg = (x) => -90 + (cl(x) - min) / (max - min) * 180;
+  const zero = min < 0 && max > 0 ? deg(0) : -90;
+  const v = value == null ? null : deg(+value);
+  const ticks = Array.from({ length: 11 }, (_, k) => {
+    const a = -90 + k * 18, [x1, y1] = glPolar(110, 112, 96, a), [x2, y2] = glPolar(110, 112, k % 5 ? 90 : 84, a);
+    return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="var(--muted)" stroke-width="${k % 5 ? 1 : 2}"/>`;
+  }).join("");
+  return `<svg class="gl-shape" viewBox="0 0 220 150" role="img" aria-label="${h(centre)} ${h(unit)}">
+    <defs><filter id="${id}" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="3" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+    <path d="${glArcPath(110, 112, 100, -90, 90)}" fill="none" stroke="#3a4352" stroke-width="3"/>
+    <path d="${glArcPath(110, 112, 76, -90, 90)}" fill="none" stroke="#0a0d12" stroke-width="22"/>
+    ${bands.map((b) => `<path d="${glArcPath(110, 112, 104, deg(b.from), deg(b.to))}" fill="none" stroke="${b.colour}" stroke-width="3" opacity=".8"/>`).join("")}
+    ${v != null && v !== zero ? `<path d="${glArcPath(110, 112, 76, Math.min(zero, v), Math.max(zero, v))}" fill="none" stroke="${colour}" stroke-width="18" filter="url(#${id})"/>` : ""}
+    ${ticks}
+    <text x="110" y="100" text-anchor="middle" font-size="30" font-weight="780" fill="var(--text)">${h(centre)}</text>
+    <text x="110" y="122" text-anchor="middle" font-size="11" fill="var(--muted)">${h(unit)}</text>
+    ${sub ? `<text x="110" y="142" text-anchor="middle" font-size="11" font-weight="650" fill="${sub.colour || "var(--muted)"}">${h(sub.text)}</text>` : ""}
+  </svg>`;
+}
+
+// A battery drawn as cells, the filled ones lit.
+function glBatteryShape(pct, colour, big, small) {
+  const p = Math.max(0, Math.min(100, +pct || 0)), cells = 10, lit = Math.round(p / 100 * cells);
+  const cell = Array.from({ length: cells }, (_, k) => {
+    const y = 236 - (k + 1) * 21, on = k < lit;
+    return `<rect x="36" y="${y}" width="88" height="17" rx="3" fill="${on ? colour : "#121821"}"
+      opacity="${on ? .55 + .45 * (k + 1) / cells : 1}" ${on ? `style="filter:drop-shadow(0 0 4px ${colour})"` : ""}/>`;
+  }).join("");
+  return `<svg class="gl-shape gl-shape-tall" viewBox="0 0 160 250" role="img" aria-label="${h(big)}">
+    <rect x="60" y="4" width="40" height="12" rx="3" fill="#3a4352"/>
+    <rect x="26" y="14" width="108" height="230" rx="14" fill="#0b0f15" stroke="#4a5462" stroke-width="3"/>
+    <rect x="30" y="18" width="100" height="222" rx="11" fill="none" stroke="#000" stroke-opacity=".6"/>
+    ${cell}
+    <text x="80" y="128" text-anchor="middle" font-size="30" font-weight="800" fill="#fff" style="paint-order:stroke" stroke="#000" stroke-width="4" stroke-opacity=".6">${h(big)}</text>
+    <text x="80" y="150" text-anchor="middle" font-size="11" fill="#e6e9ef" style="paint-order:stroke" stroke="#000" stroke-width="3" stroke-opacity=".6">${h(small)}</text>
+  </svg>`;
+}
+
+// A donut of parts, with a figure in the hole and a legend under it.
+function glDonut(parts, centre, unit) {
+  const tot = parts.reduce((a, x) => a + (x.v > 0 ? x.v : 0), 0);
+  let a = 0;
+  const segs = tot > 0 ? parts.filter((x) => x.v > 0).map((x) => {
+    const span = x.v / tot * 360, a0 = a + 1.5, a1 = a + span - 1.5;
+    a += span;
+    return span >= 359.9 ? `<circle cx="100" cy="100" r="74" fill="none" stroke="${x.colour}" stroke-width="24"/>`
+      : `<path d="${glArcPath(100, 100, 74, a0, Math.max(a0 + .5, a1))}" fill="none" stroke="${x.colour}" stroke-width="24"/>`;
+  }).join("") : "";
+  return `<div class="gl-donut"><svg class="gl-shape" viewBox="0 0 200 200" role="img" aria-label="${h(centre)} ${h(unit)}">
+      <circle cx="100" cy="100" r="74" fill="none" stroke="#0a0d12" stroke-width="30"/>
+      <g style="filter:drop-shadow(0 0 6px rgba(255,255,255,.12))">${segs}</g>
+      <circle cx="100" cy="100" r="56" fill="#0d1219" stroke="#2c3440" stroke-width="2"/>
+      <text x="100" y="104" text-anchor="middle" font-size="30" font-weight="800" fill="var(--text)">${h(centre)}</text>
+      <text x="100" y="124" text-anchor="middle" font-size="11" fill="var(--muted)">${h(unit)}</text></svg>
+    <div class="gl-legend">${parts.map((x) => `<span><b class="dot" style="background:${x.colour}"></b>${h(x.label)}<strong>${x.text}</strong></span>`).join("")}</div></div>`;
+}
+
+// Concentric rings, one per row, each filled to its share.
+function glRings(rows, centre, unit) {
+  const ring = (r, k) => {
+    const rad = 82 - k * 18, p = Math.max(0, Math.min(1, r.share || 0));
+    return `<circle cx="100" cy="100" r="${rad}" fill="none" stroke="#0a0d12" stroke-width="12"/>
+      ${p > 0 ? `<path d="${glArcPath(100, 100, rad, 0, Math.max(1, p * 359.5))}" fill="none" stroke="${r.colour}" stroke-width="10" stroke-linecap="round" style="filter:drop-shadow(0 0 4px ${r.colour})"/>` : ""}`;
+  };
+  return `<div class="gl-donut"><svg class="gl-shape" viewBox="0 0 200 200" role="img" aria-label="${h(centre)} ${h(unit)}">
+      ${rows.map(ring).join("")}
+      <text x="100" y="104" text-anchor="middle" font-size="22" font-weight="800" fill="var(--text)">${h(centre)}</text>
+      <text x="100" y="120" text-anchor="middle" font-size="9.5" fill="var(--muted)">${h(unit)}</text></svg>
+    <div class="gl-legend">${rows.map((r) => `<span><b class="dot" style="background:${r.colour}"></b>${h(r.label)}<strong>${r.text}</strong></span>`).join("")}</div></div>`;
+}
+
+// A 24-hour clock with a radial bar per hour.
+function glClock(byHour, colour, centre, unit) {
+  const vals = Array.from({ length: 24 }, (_, k) => +(byHour[k] ?? byHour[String(k)] ?? 0) || 0);
+  const mx = Math.max(...vals, 0.001);
+  const bars = vals.map((v, k) => {
+    const a = k * 15, len = v > 0 ? 6 + v / mx * 30 : 2;
+    const [x1, y1] = glPolar(100, 100, 52, a), [x2, y2] = glPolar(100, 100, 52 + len, a);
+    return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
+      stroke="${v > 0 ? colour : "#2a313c"}" stroke-width="6" stroke-linecap="round" ${v > 0 ? `style="filter:drop-shadow(0 0 3px ${colour})"` : ""}/>`;
+  }).join("");
+  const lab = [0, 6, 12, 18].map((hr) => {
+    const [x, y] = glPolar(100, 100, 40, hr * 15);
+    return `<text x="${x.toFixed(1)}" y="${(y + 3.5).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--muted)">${hr}</text>`;
+  }).join("");
+  return `<svg class="gl-shape" viewBox="0 0 200 200" role="img" aria-label="${h(centre)} ${h(unit)}">
+    <circle cx="100" cy="100" r="96" fill="#0b0f15" stroke="#3a4352" stroke-width="2"/>
+    <circle cx="100" cy="100" r="90" fill="none" stroke="#000" stroke-opacity=".5" stroke-width="2"/>
+    <circle cx="100" cy="100" r="50" fill="#0d1219" stroke="#2c3440"/>
+    ${bars}${lab}
+    <text x="100" y="102" text-anchor="middle" font-size="18" font-weight="800" fill="var(--text)">${h(centre)}</text>
+    <text x="100" y="116" text-anchor="middle" font-size="8.5" fill="var(--muted)">${h(unit)}</text></svg>`;
+}
+
+// A hexagon badge: a grade, its score and a ring of progress round it.
+function glBadge(score, grade, colour, caption) {
+  const p = Math.max(0, Math.min(100, +score || 0));
+  const hex = (r) => Array.from({ length: 6 }, (_, k) => glPolar(100, 100, r, k * 60).map((x) => x.toFixed(1)).join(",")).join(" ");
+  const per = 6 * 84, dash = per * p / 100;
+  return `<svg class="gl-shape" viewBox="0 0 200 210" role="img" aria-label="grade ${h(grade)} ${h(score)}">
+    <polygon points="${hex(92)}" fill="#0b0f15" stroke="#3a4352" stroke-width="3"/>
+    <polygon points="${hex(84)}" fill="none" stroke="#0a0d12" stroke-width="10"/>
+    <polygon points="${hex(84)}" fill="none" stroke="${colour}" stroke-width="8" stroke-dasharray="${dash.toFixed(1)} ${per}"
+      style="filter:drop-shadow(0 0 5px ${colour})" transform="rotate(0 100 100)"/>
+    <polygon points="${hex(66)}" fill="#121821" stroke="#2c3440" stroke-width="1.5"/>
+    <text x="100" y="112" text-anchor="middle" font-size="48" font-weight="850" fill="${colour}" style="filter:drop-shadow(0 0 6px ${colour})">${h(grade || "—")}</text>
+    <text x="100" y="138" text-anchor="middle" font-size="12" fill="var(--text)">${score == null ? "" : `${Math.round(p)} / 100`}</text>
+    <text x="100" y="206" text-anchor="middle" font-size="11" fill="var(--muted)">${h(caption)}</text></svg>`;
+}
+
+// LED segment meters: a row of lit blocks per reading.
+function glSegs(rows) {
+  return `<div class="gl-segs">${rows.map((r) => {
+    const n = 12, lit = Math.round(Math.max(0, Math.min(1, r.share || 0)) * n);
+    return `<div class="gl-seg"><span>${h(r.label)}</span><strong>${r.text}</strong>
+      <i>${Array.from({ length: n }, (_, k) => `<b class="${k < lit ? "on" : ""}" style="${k < lit ? `--sc:${typeof r.colour === "function" ? r.colour(k / n) : r.colour}` : ""}"></b>`).join("")}</i></div>`;
+  }).join("")}</div>`;
+}
+
+// Speed (area) and power (line) over the last few minutes of the drive.
+function glTrace(hist) {
+  const W = 300, H = 92;
+  if (!hist || hist.length < 2) {
+    return `<div class="gl-trace"><div class="gl-trace-h"><span>Last 3 min</span></div>
+      <div class="gl-trace-wait">building the trace…</div></div>`;
+  }
+  const t0 = hist[0].t, t1 = hist[hist.length - 1].t || t0 + 1;
+  const vmax = Math.max(60, ...hist.map((p) => p.v));
+  const kws = hist.filter((p) => p.kw != null).map((p) => p.kw);
+  const kmax = Math.max(20, ...kws.map(Math.abs));
+  const x = (t) => ((t - t0) / Math.max(1, t1 - t0) * W).toFixed(1);
+  const yv = (v) => (H - 4 - v / vmax * (H - 12)).toFixed(1);
+  const yk = (k) => (H / 2 - k / kmax * (H / 2 - 6)).toFixed(1);
+  const area = `M0 ${H} ` + hist.map((p) => `L${x(p.t)} ${yv(p.v)}`).join(" ") + ` L${W} ${H} Z`;
+  const kline = hist.filter((p) => p.kw != null).map((p, k) => `${k ? "L" : "M"}${x(p.t)} ${yk(p.kw)}`).join(" ");
+  return `<div class="gl-trace"><div class="gl-trace-h"><span>Last 3 min</span>
+      <span><b class="dot" style="background:#22d3ee"></b>speed <b class="dot" style="background:var(--amber)"></b>power</span></div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+      <line x1="0" x2="${W}" y1="${H / 2}" y2="${H / 2}" stroke="#2a3340" stroke-dasharray="3 4"/>
+      <path d="${area}" fill="rgba(34,211,238,.18)" stroke="#22d3ee" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+      ${kline ? `<path d="${kline}" fill="none" stroke="var(--amber)" stroke-width="2" vector-effect="non-scaling-stroke"/>` : ""}
+    </svg></div>`;
+}
+
+function glBox(label, value, unit, tone = "") {
+  return `<div class="gl-box ${tone}"><span class="gl-box-l">${h(label)}</span>
+    <span class="gl-box-v">${value}<small>${h(unit || "")}</small></span></div>`;
+}
+
+function glSplit(parts) {
+  const tot = parts.reduce((a, p) => a + (p.v > 0 ? p.v : 0), 0);
+  const seg = parts.map((p) => tot > 0 && p.v > 0
+    ? `<span style="width:${(p.v / tot * 100).toFixed(1)}%;background:${p.colour}"></span>` : "").join("");
+  const legend = parts.map((p) => `<span><b class="dot" style="background:${p.colour}"></b>${h(p.label)}
+    <strong>${p.text}</strong></span>`).join("");
+  return `<div class="gl-split">${seg || '<span style="width:100%;background:var(--panel-2)"></span>'}</div>
+    <div class="gl-legend">${legend}</div>`;
+}
+
+const GLANCE_TABS = [
+  { id: "live", label: "Live", c: "#22d3ee", ico: '<circle cx="12" cy="12" r="2.5"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14"/>' },
+  { id: "drive", label: "Drive", c: "var(--accent-2)", ico: '<path d="M4 15a8 8 0 1 1 16 0"/><path d="m12 15 4-5"/>' },
+  { id: "eff", label: "Efficiency", c: "var(--amber)", ico: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>' },
+  { id: "battery", label: "Battery", c: "var(--green)", ico: '<rect x="2" y="7" width="16" height="10" rx="2.5"/><path d="M21 10.5v3"/>' },
+  { id: "trips", label: "Trips", c: "var(--teal)", ico: '<circle cx="12" cy="12" r="9"/><path d="m15.9 8.1-2.2 5.6-5.6 2.2 2.2-5.6 5.6-2.2Z"/>' },
+  { id: "charge", label: "Charging", c: "var(--violet)", ico: '<path d="M13 2.5 4 13.5h7l-1 8 9-11h-7l1-8Z"/>' },
+  { id: "parked", label: "Parked", c: "#38bdf8", ico: '<rect x="4" y="3" width="16" height="18" rx="3"/><path d="M10 17V8h3a2.5 2.5 0 0 1 0 5h-3"/>' },
+  { id: "cost", label: "Cost", c: "#ff6b70", ico: '<circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.5-1-1.6-1.5-3-1.5-1.7 0-3 .8-3 2s1.3 1.7 3 2 3 .8 3 2-1.3 2-3 2c-1.4 0-2.5-.5-3-1.5M12 6.5v1.5M12 16v1.5"/>' },
+  { id: "tips", label: "Tips", c: "#facc15", ico: '<path d="M9.5 18.5h5M10.5 21.5h3"/><path d="M15.1 14.2c.2-1 .7-1.8 1.4-2.5A4.9 4.9 0 0 0 18 8.2a6 6 0 0 0-12 0c0 1.3.5 2.5 1.5 3.5.7.7 1.2 1.5 1.4 2.5"/>' },
+];
+// The Live page's feed: pushed from the server's in-memory stream while the
+// page is on screen (see glLivePoll and /api/live/stream); the car sends the
+// drive fields every second.
+// Instant kW and Wh/km come from pack voltage x current when the car streams
+// them, else from the change in energy and odometer between two polls at
+// least 20 s apart.
+const glLiveState = { data: null, inst: null, prev: null, timer: null, lastStart: null, sign: 0, hist: [],
+  es: null, esQuery: "", esOpened: 0, esLast: 0, wh: null, whKey: null, acc: 0, speeds: [] };
+// The last reading from an earlier visit, if recent enough to be worth showing
+// for the moment before the stream's first frame arrives.
+try {
+  const kept = JSON.parse(localStorage.getItem("glLive") || "null");
+  if (kept && kept.L && Date.now() - kept.at < 10 * 60 * 1000) {
+    // Its age was right when it was saved; add the time since.
+    if (kept.L.now && kept.L.now.age_sec != null) kept.L.now.age_sec += Math.round((Date.now() - kept.at) / 1000);
+    glLiveState.data = kept.L;
+  }
+} catch (_) { /* nothing kept */ }
+function glanceVisible() {
+  const el = document.getElementById("glance");
+  return !!el && getComputedStyle(el).display !== "none";
+}
+// Keep the screen on while the Live page is showing (Screen Wake Lock), so a
+// phone in a mount does not dim and lock mid-drive. Released as soon as the
+// page is left, the phone turned upright or the app put away; the browser
+// drops the lock itself when the app is hidden, so it is asked for again on
+// return. Unsupported browsers just carry on and the page says so.
+const glWake = { lock: null, supported: "wakeLock" in navigator, failed: false, video: null, videoOn: false };
+// iPhones drop or ignore the Wake Lock (it reports success but lets the
+// screen sleep in a home-screen app before iOS 18.4), so there a muted,
+// looping, inline video also plays while the Live page is up: iOS keeps the
+// screen on during video playback.
+const glWakeIOS = /iP(hone|ad|od)/.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+function glWakeVideo(on) {
+  if (on) {
+    if (!glWake.video) {
+      const v = document.createElement("video");
+      v.src = "/static/keepawake.mp4";
+      v.muted = true; v.loop = true; v.playsInline = true;
+      v.setAttribute("muted", ""); v.setAttribute("playsinline", ""); v.setAttribute("aria-hidden", "true");
+      v.style.cssText = "position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:.01;pointer-events:none";
+      document.body.appendChild(v);
+      glWake.video = v;
+    }
+    if (!glWake.videoOn) {
+      const p = glWake.video.play();
+      if (p && p.then) {
+        p.then(() => { glWake.videoOn = true; })
+          .catch(() => { glWake.videoOn = false; });   // blocked until a tap (Low Power Mode)
+      }
+    }
+  } else if (glWake.video && glWake.videoOn) {
+    glWake.video.pause();
+    glWake.videoOn = false;
+  }
+}
+function glWakeWanted() { return glanceTab === "live" && glanceVisible() && !document.hidden; }
+async function glWakeSync() {
+  const want = glWakeWanted();
+  if (glWakeIOS) glWakeVideo(want);
+  if (want && !glWake.lock && glWake.supported) {
+    try {
+      glWake.lock = await navigator.wakeLock.request("screen");
+      glWake.failed = false;
+      glWake.lock.addEventListener("release", () => { glWake.lock = null; });
+    } catch (_) { glWake.failed = true; }
+  } else if (!want && glWake.lock) {
+    try { await glWake.lock.release(); } catch (_) { /* already gone */ }
+    glWake.lock = null;
+  }
+}
+// A tap counts as the gesture iOS wants before it plays media, and lets a
+// refused Wake Lock be asked for again.
+document.addEventListener("pointerdown", () => { if (glWakeWanted()) { glWake.failed = false; glWakeSync(); } }, { passive: true });
+document.addEventListener("visibilitychange", () => { glWakeSync(); });
+window.addEventListener("orientationchange", () => setTimeout(glWakeSync, 400));
+// Turned sideways: connect the stream (and fetch once) now rather than on the
+// next tick of the one-second loop.
+let glLiveWasVisible = false;
+window.addEventListener("resize", () => {
+  const vis = glanceVisible();
+  if (vis && !glLiveWasVisible && glanceTab === "live") glLivePoll();
+  glLiveWasVisible = vis;
+});
+window.addEventListener("resize", () => setTimeout(glWakeSync, 400));
+
+// One reading from the server, pushed or polled: fold it into the page.
+function glLiveApply(L) {
+  const nw = L.now || {};
+  const p = glLiveState.prev;
+  // Pack power, when the car streams voltage and current: the power this
+  // second, discharge positive (the server learns the car's sign).
+  if (L.driving && p && nw.ts && nw.ts - p.ts >= 20 && nw.energy_kwh != null && p.energy_kwh != null) {
+    const dkwh = p.energy_kwh - nw.energy_kwh, dkm = (nw.odo_km || 0) - (p.odo_km || 0);
+    const hours = (nw.ts - p.ts) / 3600;
+    glLiveState.inst = { kw: dkwh >= 0 ? dkwh / hours : null, whkm: dkm > 0.05 ? dkwh * 1000 / dkm : null };
+    glLiveState.prev = nw;
+  } else if (!p || !L.driving || (nw.ts && nw.ts - p.ts > 300)) {
+    glLiveState.prev = nw.ts ? nw : null;
+    if (!L.driving) glLiveState.inst = null;
+  }
+  // Wh/km eased toward each new figure rather than jumped to it: the car's
+  // own screen moves slowly, and a figure that leaps with every odometer tick
+  // reads as noise. A new drive starts the average afresh.
+  if (L.trip && L.trip.wh_per_km != null) {
+    const key = L.trip.start_time;
+    if (glLiveState.whKey !== key || glLiveState.wh == null) { glLiveState.whKey = key; glLiveState.wh = L.trip.wh_per_km; }
+    else glLiveState.wh += (L.trip.wh_per_km - glLiveState.wh) * 0.12;
+    L.trip.wh_per_km = Math.round(glLiveState.wh);
+    L.trip.driving_wh_per_km = L.trip.wh_per_km;
+  } else if (!L.trip) { glLiveState.wh = null; }
+  // Accelerating or slowing: this speed against the one about three seconds ago.
+  {
+    const now = Date.now(), v = nw.speed_kmh != null ? +nw.speed_kmh : null;
+    const h = glLiveState.speeds = (glLiveState.speeds || []).filter((x) => now - x.t < 4000);
+    if (v != null) h.push({ t: now, v });
+    const old = h.length ? h[0].v : null;
+    glLiveState.acc = v == null || old == null ? 0 : v - old > 2 ? 1 : v - old < -2 ? -1 : 0;
+  }
+  glLiveState.data = L;
+  // Kept on the phone so the next time it is turned sideways the page opens
+  // on the last reading, not on an empty frame waiting for the stream.
+  if (Date.now() - (glLiveState.saved || 0) > 5000) {
+    glLiveState.saved = Date.now();
+    try { localStorage.setItem("glLive", JSON.stringify({ at: Date.now(), L })); } catch (_) { /* private mode */ }
+  }
+  if (nw.power_kw != null) {
+    const kw = nw.power_kw;
+    const v = nw.speed_kmh || 0;
+    glLiveState.inst = { kw, regen: kw < 0, whkm: v > 5 && kw > 0 ? kw * 1000 / v : null, measured: true };
+  }
+  // The last three minutes of speed and power, for the trace on the page.
+  if (L.driving && nw.ts) {
+    const hst = glLiveState.hist, lastT = hst.length ? hst[hst.length - 1].t : 0;
+    if (nw.ts > lastT) hst.push({ t: nw.ts, v: +nw.speed_kmh || 0,
+      kw: glLiveState.inst && glLiveState.inst.kw != null ? glLiveState.inst.kw : null });
+    while (hst.length && hst[0].t < nw.ts - 180) hst.shift();
+  } else if (!L.driving) glLiveState.hist = [];
+  glLiveDraw();
+}
+
+// Frames can arrive several times a second; one redraw serves them all, at
+// most about eight a second, so a busy stream does not cost the phone layout
+// work for every record.
+let glDrawTimer = null, glDrawLast = 0;
+function glLiveDraw() {
+  if (glDrawTimer) return;
+  const wait = Math.max(0, 200 - (Date.now() - glDrawLast));
+  glDrawTimer = setTimeout(() => {
+    glDrawTimer = null;
+    glDrawLast = Date.now();
+    if (lastData && glanceTab === "live" && glanceVisible()) renderGlance(lastData);
+  }, wait);
+}
+
+function glLiveQuery() {
+  const q = new URLSearchParams();
+  const cap = lastData && lastData.vehicle && lastData.vehicle.usable_capacity_kwh;
+  if (cap) q.set("capacity_kwh", cap);
+  if (lastData && lastData.vehicle && lastData.vehicle.vin) q.set("vin", lastData.vehicle.vin);
+  return q.toString();
+}
+
+// The Live page is fed by a stream the server pushes down the moment each
+// record reaches it from the car — no polling interval between the car and
+// the screen. The stream is open only while the Live page is on screen. If it
+// cannot connect (an old browser, a proxy in the way), the page asks once a
+// second instead. Either way the server answers from memory, never the
+// database.
+async function glLivePoll() {
+  clearTimeout(glLiveState.timer);
+  glWakeSync();
+  const want = glanceTab === "live" && glanceVisible() && !document.hidden;
+  const es = glLiveState.es;
+  if (!want) {
+    if (es) { es.close(); glLiveState.es = null; }
+    glLiveState.timer = setTimeout(glLivePoll, 1000);
+    return;
+  }
+  const q = glLiveQuery();
+  if (window.EventSource && (!es || es.readyState === 2 || glLiveState.esQuery !== q)) {
+    if (es) es.close();
+    const s = new EventSource("/api/live/stream?" + q);
+    glLiveState.es = s;
+    glLiveState.esQuery = q;
+    glLiveState.esOpened = Date.now();
+    s.onmessage = (e) => {
+      glLiveState.esLast = Date.now();
+      try { glLiveApply(JSON.parse(e.data)); } catch (_) { /* a bad frame: wait for the next */ }
+    };
+  }
+  // No frame from the stream for 20 s (it sends one at least every 15 s):
+  // fall back to asking, and let the stream retry on its own.
+  const live = glLiveState.es;
+  const quiet = !live || !glLiveState.esLast || glLiveState.esLast < glLiveState.esOpened
+    || Date.now() - Math.max(glLiveState.esLast || 0, glLiveState.esOpened || 0) > 20000;
+  if (quiet) {
+    try {
+      const r = await fetch("/api/live?" + q, { credentials: "same-origin" });
+      if (r.ok) glLiveApply(await r.json());
+    } catch (_) { /* offline: try again shortly */ }
+  }
+  glLiveState.timer = setTimeout(glLivePoll, 1000);
+}
+setTimeout(glLivePoll, 1500);
+// A drive starting opens the Live page once, so turning the phone sideways
+// in the car lands on it; any tab chosen after that is left alone.
+function glAutoLive(d) {
+  const st = d && d.live_trip && d.live_trip.start_time;
+  if (st && st !== glLiveState.lastStart) {
+    glLiveState.lastStart = st;
+    glanceTab = "live";
+  }
+}
+
+const glPref = (k, fallback) => { try { return localStorage.getItem(k) || fallback; } catch (_) { return fallback; } };
+const glSave = (k, v) => { try { localStorage.setItem(k, v); } catch (_) { /* private mode */ } };
+let glanceTab = glPref("glanceTab", "drive");
+
+function renderGlance(d) {
+  const el = document.getElementById("glance");
+  if (!el || !d) return;
+  glAutoLive(d);
+  const drv = d.driving || {}, eff = d.efficiency || {}, bal = d.battery_balance || {};
+  const chg = d.charging || {}, bat = d.battery || {}, v = d.vehicle || {};
+  const asmt = d.assessment || {};
+  const cur = d.currency || "";
+  const n = (x, dg = 0) => (x == null || !Number.isFinite(+x) ? "—" : fmt(+x, dg));
+  const whkm = eff.avg_efficiency_wh_per_km ?? drv.avg_efficiency_wh_per_km;
+  const rated = eff.rated_wh_per_km;
+  const vsRated = eff.vs_rated_pct;
+  const tripK = +bal.trip_kwh || +drv.trip_energy_used_kwh || 0, parkK = +bal.vampire_kwh || 0;
+  const lt = (drv.recent_trips || [])[0];
+  const bandTone = (b) => (b === "efficient" ? "tone-good" : b === "inefficient" ? "tone-warn" : "");
+  const bandColour = (b) => (b === "efficient" ? "var(--green)" : b === "inefficient" ? "var(--amber)" : "var(--accent-2)");
+  const panel = (title, body) => `<div class="gl-panel">${title ? `<div class="gl-label">${h(title)}</div>` : ""}${body}</div>`;
+  const boxes = (...b) => `<div class="gl-stack">${b.join("")}</div>`;
+  const none = (t) => `<div class="gl-line">${h(t)}</div>`;
+  // Every page: a panel, the dial, a panel, and an optional line under them.
+  const page = (left, dial, right, foot = "") => ({ body: `<div class="gl-page gl-3">
+      <div class="gl-side">${left}</div><div class="gl-pod">${dial}</div><div class="gl-side">${right}</div></div>`,
+    foot });
+
+  const level = bal.current_level_pct ?? bal.current_soc_pct;
+  const used = bal.used_pct;
+  const kmPct = drv.km_per_soc_pct;
+  const score = drv.eco_score;
+  const scoreColour = (x) => (x == null ? "var(--muted)" : x >= 80 ? "var(--green)" : x >= 60 ? "var(--accent-2)" : "var(--amber)");
+  const lastLine = lt ? `<div class="gl-msg"><span class="gl-msg-l">Last trip${lt.id != null ? ` #${lt.id}` : ""}</span>
+      <span>${h(lt.route || tripWhen(lt.start_time))}</span>
+      <strong>${n(lt.distance_km, 1)} km</strong><strong>${n(lt.wh_per_km)} Wh/km</strong><strong>${n(lt.duration_min)} min</strong>
+      ${lt.efficiency_band ? `<span class="gl-chip ${bandTone(lt.efficiency_band)}">${h(lt.efficiency_band)}</span>` : ""}</div>` : "";
+
+  const pages = {
+    // Live: the drive in progress, polled from /api/live (see glLive below).
+    live: () => {
+      const L = glLiveState.data, t = L && L.trip, nw = (L && L.now) || {};
+      const spd = nw.speed_kmh != null ? +nw.speed_kmh : null;
+      const inst = glLiveState.inst;   // {whkm, kw} from the last two polls
+      const lvl = nw.battery_level ?? nw.soc;
+      const fresh = nw.age_sec != null && nw.age_sec < 120;
+      const status = !L ? "connecting…"
+        : t ? (fresh ? `live · updated ${nw.age_sec}s ago` : `drive open · last heard ${Math.round(nw.age_sec / 60)} min ago`)
+        : "parked · no drive in progress";
+      const foot = `<span class="gl-live ${t && fresh ? "on" : ""}"><b></b>${h(status)}</span>
+        ${(glWakeIOS ? glWake.videoOn : glWake.lock) ? '<span class="gl-chip">screen kept on</span>'
+          : '<span class="gl-chip tone-warn">tap to keep screen on</span>'}
+        ${nw.out_temp != null ? `<span class="gl-chip">${n(nw.out_temp, 0)}°C outside</span>` : ""}
+        ${nw.climate_on ? '<span class="gl-chip">climate on</span>' : ""}
+        ${t && t.eta ? `<span class="gl-chip">ETA ${h(t.eta.place)} ${n(t.eta.eta_min)} min</span>` : ""}`;
+      const ico = {
+        dist: '<path d="M4 18 10 6l4 8 2-4 4 8"/>',
+        time: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>',
+        speed: '<path d="M4 15a8 8 0 1 1 16 0"/><path d="m12 15 4-5"/>',
+        whkm: '<path d="M13 3 5 13h6l-1 8 8-10h-6l1-8Z"/>',
+        batt: '<rect x="3" y="7" width="16" height="10" rx="2.5"/><path d="M22 11v2M7 10v4M11 10v4"/>',
+        range: '<path d="M12 21s-6-5.6-6-11a6 6 0 0 1 12 0c0 5.4-6 11-6 11Z"/><circle cx="12" cy="10" r="2.2"/>',
+        odo: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10v4M11 10v4M15 10v4"/>',
+      };
+      const tile = (k, label, value, unit, tone = "", cls = "") => `<div class="gl-rt ${tone} ${cls}">
+          <i><svg viewBox="0 0 24 24" aria-hidden="true">${ico[k]}</svg></i>
+          <span>${h(label)}</span><strong>${value}<small>${h(unit)}</small></strong></div>`;
+      const pct = lvl != null ? Math.max(0, Math.min(100, +lvl)) : null;
+      if (!t) {
+        // Parked: the car now on the left, the last drive on the right, in the
+        // same tiles as the driving view. The odometer comes from the
+        // dashboard until the car next sends one (it only does when it moves).
+        const odo = nw.odo_km ?? (lastData && lastData.vehicle && lastData.vehicle.current_odo_km);
+        // Until the car's own reading arrives (the app has just restarted, and
+        // the car sends level and range only when they change), the figures the
+        // dashboard already holds stand in.
+        const dashPct = bal && (bal.current_level_pct ?? bal.current_soc_pct);
+        const pctShown = pct ?? (dashPct != null ? dashPct : null);
+        const estFull = d.battery && d.battery.est_full_range_km;
+        const rangeShown = nw.range_km ?? (pctShown != null && estFull ? Math.round(estFull * pctShown / 100) : null);
+        const band = lt && lt.efficiency_band ? bandTone(lt.efficiency_band) : "";
+        const ltTone = band === "tone-good" ? "good" : band === "tone-warn" || band === "tone-bad" ? "warn" : "";
+        return page(
+          `<div class="gl-trip">
+            <div class="gl-trip-h"><b class="rec idle"></b>Car now<em>${!L ? "connecting…" : nw.age_sec != null ? `${nw.age_sec < 90 ? nw.age_sec + "s" : Math.round(nw.age_sec / 60) + " min"} ago` : ""}</em></div>
+            <div class="gl-rts">
+              ${tile("batt", "Batt", pctShown != null ? n(pctShown, 1) : "—", "%", pctShown != null && pctShown < 20 ? "warn" : "good")}
+              ${tile("range", "Range", rangeShown != null ? n(rangeShown) : "—", "km")}
+              ${tile("odo", "Odometer", odo != null ? fmt(odo) : "—", "km", "", "wide")}
+            </div>
+          </div>`,
+          glSpeedo({ value: spd, max: 160, gear: nw.shift, acc: glLiveState.acc, label: "Speed" }),
+          lt ? `<div class="gl-trip">
+            <div class="gl-trip-h">Last trip<em>${lt.id != null ? "#" + lt.id + " · " : ""}${h(tripWhen(lt.start_time).split(" ").pop())}</em></div>
+            <div class="gl-rts">
+              ${tile("dist", "Dist", n(lt.distance_km, 1), "km")}
+              ${tile("time", "Time", n(lt.duration_min), "min")}
+              ${tile("speed", "Avg", lt.avg_speed_kmh != null ? n(lt.avg_speed_kmh) : "—", "km/h")}
+              ${tile("whkm", "Use", n(lt.wh_per_km), "Wh/km", ltTone)}
+            </div>
+          </div>` : "",
+          foot);
+      }
+      // Energy over distance, as the car's "Current Drive" shows it.
+      const tw = t.wh_per_km ?? t.driving_wh_per_km;
+      // Left: a trip computer of icon tiles. Right: a power meter, a trace of
+      // the last few minutes and a battery bar, so neither side repeats the
+      // Drive page's LED meters.
+      const kw = inst && inst.kw != null ? inst.kw : null;
+      const kwMin = -60, kwMax = 150, zero = -kwMin / (kwMax - kwMin) * 100;
+      const kwPos = kw == null ? null : Math.max(0, Math.min(100, (kw - kwMin) / (kwMax - kwMin) * 100));
+      const powerBar = `<div class="gl-power">
+          <div class="gl-power-top"><span>${kw != null && kw < 0 ? "Regen" : "Power"}</span>
+            <strong class="${kw != null && kw < 0 ? "regen" : ""}">${kw == null ? "—" : n(Math.abs(kw), 1)}<small>kW</small></strong></div>
+          <div class="gl-power-track">
+            ${kwPos == null ? "" : `<i class="gl-power-fill ${kw < 0 ? "regen" : kw > 60 ? "hard" : ""}"
+              style="left:${Math.min(zero, kwPos).toFixed(1)}%;width:${Math.abs(kwPos - zero).toFixed(1)}%"></i>`}
+            <b style="left:${zero.toFixed(1)}%"></b></div>
+          <div class="gl-power-scale"><span>regen</span><span>0</span><span>${kwMax} kW</span></div>
+          ${inst && inst.whkm != null ? `<div class="gl-power-sub">${n(inst.whkm)} Wh/km right now</div>` : ""}
+        </div>`;
+      // The car's battery % moves in whole steps, which barely register on a short
+      // drive: take the larger of that and the energy used over the pack size.
+      const packKwh = lastData && lastData.vehicle && lastData.vehicle.usable_capacity_kwh;
+      const usedPct = Math.max(+t.soc_used || 0, packKwh && t.energy_kwh > 0 ? t.energy_kwh / packKwh * 100 : 0);
+      const battBar = `<div class="gl-battbar">
+          <div class="gl-battbar-top"><span>Battery</span><strong>${pct == null ? "—" : n(pct, 1)}<small>%</small></strong></div>
+          <div class="gl-battbar-cell"><i style="width:${pct ?? 0}%;background:${(pct ?? 0) < 20 ? "#ff6b70" : "var(--green)"}"></i></div>
+          <div class="gl-power-sub">used ${n(usedPct, 1)}% this drive · ${n(t.energy_kwh, 2)} kWh</div></div>`;
+      const twTone = rated && tw ? (tw > rated ? "warn" : "good") : "";
+      return page(
+        `<div class="gl-trip">
+          <div class="gl-trip-h"><b class="rec"></b>Trip computer<em>since ${h(tripWhen(t.start_time).split(" ").pop())}</em></div>
+          <div class="gl-rts">
+            ${tile("dist", "Dist", n(t.distance_km, 1), "km")}
+            ${tile("time", "Time", n(t.duration_min), "min")}
+            ${tile("speed", "Avg", n(t.avg_speed_kmh), "km/h")}
+            ${tile("whkm", "Use", n(tw), "Wh/km", twTone)}
+          </div>
+        </div>`,
+        glSpeedo({ value: spd, max: 160, mark: t.max_speed_kmh, gear: nw.shift, acc: glLiveState.acc, label: "Speed" }),
+        `${powerBar}
+         ${glTrace(glLiveState.hist)}
+         ${battBar}`,
+        foot);
+    },
+    // Drive: boxes, the Wh/km dial, and how the distance splits by speed.
+    drive: () => {
+      const top = Math.max(300, Math.ceil(((whkm || 0) * 1.25) / 50) * 50);
+      const sb = Object.entries(drv.distance_by_speed_band || {});
+      const sbC = ["#ff6b70", "var(--amber)", "var(--teal)", "var(--accent-2)"];
+      return page(
+        boxes(glBox("Distance", n(drv.total_distance_km, 1), "km"), glBox("Trips", n(drv.total_drives), ""),
+          glBox("Drive time", n(drv.total_duration_h, 1), "h")),
+        glDial({ value: whkm, min: 0, max: top, step: 25,
+          bands: rated ? [{ from: 0, to: rated, colour: "var(--green)" }, { from: rated, to: top, colour: "var(--amber)" }] : [],
+          mark: rated, centre: n(whkm), unit: "Wh/km",
+          colour: vsRated != null && vsRated > 0 ? "var(--amber)" : "var(--green)",
+          sub: vsRated == null ? null : { text: `${vsRated > 0 ? "+" : ""}${n(vsRated, 1)}% vs rated`,
+            colour: vsRated > 0 ? "var(--amber)" : "var(--green)" }, label: "Efficiency" }),
+        `${sb.length ? panel("Distance by speed", glSplit(sb.map(([k, x], q) => ({ v: +x || 0, colour: sbC[q % 4],
+            label: k.replace(/\s*\(.*\)/, ""), text: `${n(x, 0)} km` })))) : ""}
+         ${glSegs([
+           { label: "Avg speed", text: `${n(drv.avg_speed_kmh)} km/h`, share: (drv.avg_speed_kmh || 0) / 110, colour: (q) => q > .8 ? "var(--amber)" : "#22d3ee" },
+           { label: "Energy", text: `${n(tripK + parkK, 1)} kWh`, share: (tripK + parkK) / ((bal.full_charge_kwh ?? v.usable_capacity_kwh) || 75), colour: "var(--accent-2)" },
+           { label: "Cost", text: `${n(drv.total_cost, 2)} ${cur}`, share: Math.min(1, (+drv.cost_per_km || 0) / .3), colour: "#ff6b70" }])}`,
+        lastLine);
+    },
+    // Efficiency: horizontal bars, a half gauge, vertical bars.
+    eff: () => {
+      const bands = Object.entries(drv.efficiency_by_speed_band || {});
+      const daily = Object.entries(eff.daily_efficiency || {}).slice(-7);
+      const lim = Math.max(30, Math.ceil(Math.abs(vsRated ?? 0) / 10) * 10);
+      return page(
+        panel("By speed · Wh/km", bands.length ? glHBars(bands.map(([k, x]) => ({ label: k.replace(/\s*\(.*\)/, ""), value: x })),
+          { mark: rated }) : none("No speed data")),
+        glHalf({ value: vsRated, min: -lim, max: lim,
+          bands: [{ from: -lim, to: 0, colour: "var(--green)" }, { from: 0, to: lim, colour: "var(--amber)" }],
+          centre: vsRated == null ? "—" : `${vsRated > 0 ? "+" : ""}${n(vsRated, 1)}%`, unit: "versus rated",
+          colour: (vsRated ?? 0) > 0 ? "var(--amber)" : "var(--green)",
+          sub: { text: `${n(whkm)} Wh/km · rated ${n(rated)}` } }),
+        panel(rated ? `By day · - - rated ${n(rated)}` : "By day", daily.length ? glVBars(daily.map(([k, x]) => ({ label: k.slice(8), value: x,
+          colour: rated && x > rated ? "var(--amber)" : "var(--teal)" })), { mark: rated }) : none("No daily data")),
+        `<span class="gl-chip">best ${n(eff.best_efficiency_wh_per_km)} Wh/km</span>
+         <span class="gl-chip">worst ${n(eff.worst_efficiency_wh_per_km)} Wh/km</span>`);
+    },
+    // Battery: where the energy went, a battery of lit cells, LED meters.
+    battery: () => {
+      const ch = bat.capacity_health;
+      const pack = +(bal.full_charge_kwh ?? v.usable_capacity_kwh) || 0;
+      // The cells show the level now; else what is left of a charge; else,
+      // for a window of many charges, km per 1% against a 7 km scale.
+      const shown = level ?? (used != null ? Math.max(0, 100 - used) : kmPct ? Math.min(100, kmPct / 7 * 100) : null);
+      return page(
+        `${panel("Where it went", glSplit([
+          { v: tripK, colour: "var(--accent-2)", label: "driving", text: `${n(tripK, 1)}` },
+          { v: parkK, colour: "var(--amber)", label: "parked", text: `${n(parkK, 2)}` }]))}
+         ${boxes(glBox("Used", n(bal.used_kwh, 1), "kWh"), glBox("Pack", n(pack, 1), "kWh"))}`,
+        glBatteryShape(shown ?? 0, (shown ?? 0) < 20 ? "#ff6b70" : "var(--green)",
+          level != null ? `${Math.round(level)}%` : used != null ? `${n(used, 1)}%` : n(kmPct, 2),
+          level != null ? "battery now" : used != null ? "used this window" : "km per 1%"),
+        glSegs([
+          { label: "Health", text: ch ? `${n(ch.health_pct, 1)}%` : "—", share: ch ? ch.health_pct / 100 : 0, colour: "var(--green)" },
+          { label: "km per 1%", text: `${n(kmPct, 2)} km`, share: (kmPct || 0) / 7, colour: "var(--teal)" },
+          { label: "Driving share", text: tripK + parkK > 0 ? `${n(tripK / (tripK + parkK) * 100, 0)}%` : "—",
+            share: tripK + parkK > 0 ? tripK / (tripK + parkK) : 0, colour: "var(--accent-2)" }]));
+    },
+    // Trips: recent bars, a donut of how the trips went, boxes.
+    trips: () => {
+      const rec = (drv.recent_trips || []).slice(0, 6).reverse();
+      const all = drv.recent_trips || [];
+      const cnt = (b) => all.filter((t) => t.efficiency_band === b).length;
+      return page(
+        panel(rated ? `Recent · Wh/km · - - rated ${n(rated)}` : "Recent · Wh/km", rec.length ? glVBars(rec.map((t) => ({
+          label: t.id != null ? `#${t.id}` : tripWhen(t.start_time).slice(0, 6),
+          value: t.wh_per_km, colour: bandColour(t.efficiency_band) })), { mark: rated }) : none("No trips")),
+        glDonut([
+          { v: cnt("efficient"), colour: "var(--green)", label: "efficient", text: cnt("efficient") },
+          { v: cnt("typical"), colour: "var(--accent-2)", label: "typical", text: cnt("typical") },
+          { v: cnt("inefficient"), colour: "var(--amber)", label: "inefficient", text: cnt("inefficient") }],
+          score == null ? "—" : String(Math.round(score)), `driving score${drv.eco_grade ? ` · ${drv.eco_grade}` : ""}`),
+        boxes(glBox("Longest", n(drv.longest_trip_km, 1), "km"), glBox("Avg trip", n(drv.avg_trip_distance_km, 1), "km"),
+          glBox("Top speed", n(drv.max_speed_kmh), "km/h")),
+        lastLine);
+    },
+    // Charging: boxes, a 24-hour clock of when energy went in, LED meters.
+    charge: () => page(
+        boxes(glBox("Charged", n(chg.total_energy_kwh, 1), "kWh"), glBox("Sessions", n(chg.total_sessions), ""),
+          glBox("Paid", n(chg.total_cost, 2), cur)),
+        glClock(chg.energy_by_hour || {}, "var(--violet)", `${n(chg.total_energy_kwh, 0)}`, "kWh by hour"),
+        `${glSegs([
+            { label: "Charged to (avg)", text: `${n(chg.avg_end_soc)}%`, share: (chg.avg_end_soc || 0) / 100,
+              colour: (q) => q >= .9 ? "var(--amber)" : q >= .8 ? "var(--green)" : "var(--violet)" },
+            { label: "To 100%", text: `${n(chg.full_charge_share_pct)}% of charges`, share: (chg.full_charge_share_pct || 0) / 100, colour: "var(--amber)" },
+            { label: "Per kWh", text: `${n(chg.avg_cost_per_kwh, 2)} ${cur}`, share: Math.min(1, (chg.avg_cost_per_kwh || 0) / 2), colour: "#ff6b70" }])}
+         ${panel("AC vs DC", glSplit([
+           { v: +chg.ac_energy_kwh || 0, colour: "var(--teal)", label: "AC", text: n(chg.ac_energy_kwh, 1) },
+           { v: +chg.dc_energy_kwh || 0, colour: "#ff6b70", label: "DC", text: n(chg.dc_energy_kwh, 1) }]))}`),
+    // Parked: boxes, a donut of driving against parked time, a half gauge.
+    parked: () => {
+      const hrs = +bal.vampire_hours || 0, drvH = +drv.total_duration_h || 0;
+      const perDay = hrs > 0 ? parkK / hrs * 24 : null;
+      const vd = drv.vampire_drain || {};
+      return page(
+        boxes(glBox("Stops", n(bal.vampire_gaps ?? vd.gaps), ""),
+          glBox("Longest", n(bal.vampire_longest_hours ?? (vd.longest || {}).hours, 1), "h"),
+          glBox("Lost", n(parkK, 2), "kWh")),
+        glDonut([
+          { v: drvH, colour: "var(--accent-2)", label: "driving", text: `${n(drvH, 1)} h` },
+          { v: hrs, colour: "#38bdf8", label: "parked", text: `${n(hrs, 0)} h` }],
+          hrs + drvH > 0 ? `${n(hrs / (hrs + drvH) * 100, 0)}%` : "—", "of the time parked"),
+        `${glHalf({ value: perDay, min: 0, max: 3,
+            bands: [{ from: 0, to: 1, colour: "var(--green)" }, { from: 1, to: 2, colour: "var(--amber)" }, { from: 2, to: 3, colour: "#ff6b70" }],
+            centre: perDay == null ? "—" : n(perDay, 2), unit: "kWh lost per parked day",
+            colour: perDay != null && perDay > 1 ? "var(--amber)" : "#38bdf8" })}
+         ${bal.vampire_longest_inducer ? panel("Longest stop drew", `<div class="gl-line"><strong>${h(bal.vampire_longest_inducer)}</strong></div>`) : ""}`);
+    },
+    // Cost: boxes, rings for where the money went, AC against DC.
+    cost: () => {
+      const per100 = drv.cost_per_km != null ? drv.cost_per_km * 100 : null;
+      const pc = d.petrol_comparison;
+      const ac = +chg.ac_cost || 0, dc = +chg.dc_cost || 0, paid = ac + dc;
+      return page(
+        boxes(glBox("Driving", n(drv.total_cost, 2), cur), glBox("Charging", n(chg.total_cost, 2), cur),
+          glBox("Per kWh", n(chg.avg_cost_per_kwh, 2), cur)),
+        glRings([
+          { label: "AC", text: `${n(ac, 2)}`, share: paid ? ac / paid : 0, colour: "var(--teal)" },
+          { label: "DC", text: `${n(dc, 2)}`, share: paid ? dc / paid : 0, colour: "#ff6b70" },
+          { label: "Driven", text: `${n(drv.total_cost, 2)}`, share: paid ? Math.min(1, (+drv.total_cost || 0) / paid) : 0, colour: "var(--amber)" }],
+          per100 == null ? "—" : n(per100, 1), `${cur} / 100 km`),
+        `${pc && pc.savings != null ? boxes(glBox(pc.savings >= 0 ? "Saved vs petrol" : "More than petrol",
+            n(Math.abs(pc.savings), 2), cur, pc.savings >= 0 ? "tone-good" : "tone-warn")) : ""}
+         ${glSegs([
+           { label: "Per km", text: `${n(drv.cost_per_km, 3)} ${cur}`, share: Math.min(1, (+drv.cost_per_km || 0) / .3), colour: "#ff6b70" },
+           { label: "DC share", text: paid ? `${n(dc / paid * 100, 0)}%` : "—", share: paid ? dc / paid : 0, colour: "var(--amber)" }])}`);
+    },
+    // Tips: the assessment as a hexagon badge between tip cards.
+    tips: () => {
+      const recs = (asmt.recommendations || d.recommendations || []).slice(0, 4);
+      const card = (r) => `<div class="gl-tip"><span class="gl-chip ${r.priority === "high" ? "tone-warn" : ""}">${h(r.category || r.priority || "")}</span>
+        <div class="gl-tip-t">${h(r.title || "")}</div></div>`;
+      const sc = asmt.score;
+      return page(
+        recs.slice(0, 2).map(card).join("") || none("Nothing to change"),
+        glBadge(sc, asmt.grade, scoreColour(sc), "overall assessment"),
+        recs.length > 2 ? recs.slice(2, 4).map(card).join("")
+          : (asmt.strengths || []).slice(0, 2).map((st) => `<div class="gl-tip"><span class="gl-chip tone-good">doing well</span>
+              <div class="gl-tip-t">${h(st.title || st)}</div></div>`).join(""),
+        asmt.verdict ? `<div class="gl-line">${h(asmt.verdict)}</div>` : "");
+    },
+  };
+  if (!pages[glanceTab]) glanceTab = "drive";
+  const side = glPref("glanceRail", "left");
+  el.classList.toggle("gl-rail-right", side === "right");
+  const rail = `<nav class="gl-rail" aria-label="Glance pages">
+      ${GLANCE_TABS.map((t) => `<button type="button" class="gl-tab${t.id === glanceTab ? " on" : ""}${
+        t.id === "live" && ((glLiveState.data && glLiveState.data.driving) || d.live_trip) ? " gl-tab-live" : ""}" data-gl-tab="${t.id}"
+        style="--tc:${t.c}" title="${t.label}" aria-label="${t.label}"><span class="gl-tab-face"><svg viewBox="0 0 24 24" aria-hidden="true">${t.ico}</svg></span></button>`).join("")}
+    </nav>`;
+  const cur_tab = GLANCE_TABS.find((t) => t.id === glanceTab);
+  const name = v.name || v.model || "Tesla";
+  const pg = pages[glanceTab]();
+  // The rail sits in the same row as the page, centred beside it, so the
+  // spine lines up with the side boxes rather than the whole screen.
+  // The page is redrawn every second while live, and a redraw would restart
+  // every CSS animation from its first frame (the scan line never got past the
+  // top). Each animation reads its starting point from a shared clock instead,
+  // so it carries on from where it was.
+  const clock = Date.now();
+  for (const ms of [450, 1200, 1400, 1600, 2400, 3100, 3200, 4500, 7000]) {
+    el.style.setProperty(`--p${ms}`, `-${clock % ms}ms`);
+  }
+  el.innerHTML = `<div class="gl-main" style="--tc:${cur_tab.c}">${GL_FRAME}
+    <div class="gl-head"><span class="gl-tabname">${h(cur_tab.label)}</span><h2>${h(name)}</h2>
+      <span class="gl-sub">${h(glanceTab === "live"
+        ? (glLiveState.data && glLiveState.data.driving ? `drive since ${tripWhen(glLiveState.data.trip.start_time)}` : "right now")
+        : (d.window_label || `${d.window_days}-day window`))}</span>
+      <button type="button" class="gl-swap" data-gl-swap title="Move the tabs to the other side"
+        aria-label="Move the tabs to the other side"><svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M7 7h13M17 4l3 3-3 3M17 17H4M7 14l-3 3 3 3"/></svg></button>
+      <button class="gl-close" type="button" data-glance-close>Close</button></div>
+    <div class="gl-body">${rail}${pg.body}</div>
+    ${pg.foot ? `<div class="gl-foot">${pg.foot}</div>` : ""}</div>`;
+  glFit(el);
+}
+
+// Shrink to fit: any figure or heading wider than the box it sits in gets a
+// smaller font until it fits (down to 8 px), so no phone size clips a number or
+// a word. Measured after every draw, so it follows the screen and the value.
+// The page may have been drawn while hidden (upright), when nothing can be
+// measured: fit again once the window has settled after a turn.
+let glFitTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(glFitTimer);
+  glFitTimer = setTimeout(() => {
+    const el = document.getElementById("glance");
+    if (el && glanceVisible()) glFit(el);
+  }, 150);
+});
+const GL_FIT = ".gl-rt strong, .gl-rt span, .gl-trip-h, .gl-power-top, .gl-battbar-top, .gl-power-sub, .gl-box-v, .gl-foot .gl-chip";
+function glFit(root) {
+  root.querySelectorAll(GL_FIT).forEach((e) => {
+    e.style.fontSize = "";
+    let fs = parseFloat(getComputedStyle(e).fontSize), n = 0;
+    while (e.scrollWidth > e.clientWidth + 1 && fs > 8 && n++ < 10) {
+      fs *= 0.92;
+      e.style.fontSize = fs.toFixed(1) + "px";
+    }
+  });
+}
+
+document.addEventListener("click", (e) => {
+  const tab = e.target.closest("[data-gl-tab]");
+  if (tab) {
+    glanceTab = tab.dataset.glTab;
+    glSave("glanceTab", glanceTab);
+    if (lastData) renderGlance(lastData);
+    if (glanceTab === "live") glLivePoll(); else glWakeSync();
+    return;
+  }
+  if (e.target.closest("[data-gl-swap]")) {
+    glSave("glanceRail", glPref("glanceRail", "left") === "left" ? "right" : "left");
+    if (lastData) renderGlance(lastData);
+    return;
+  }
+  if (e.target.closest("[data-glance]")) {
+    if (lastData) renderGlance(lastData);
+    document.body.classList.add("glance-on");
+  } else if (e.target.closest("[data-glance-close]")) {
+    document.body.classList.remove("glance-on");
+    glWakeSync();
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") document.body.classList.remove("glance-on");
+});
+
 function renderQuickNav() {
   document.querySelectorAll("#quick-nav .qn-btn[data-target]").forEach((btn) => {
     const target = document.getElementById(btn.dataset.target);

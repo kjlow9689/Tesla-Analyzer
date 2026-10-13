@@ -249,6 +249,13 @@ kill -0 $PROXY_PID 2>/dev/null || die "the proxy exited on startup (see $LOG)"
 # to a car is how a stolen Tesla is prepared, and nothing else in 270 fields
 # would show it.
 #
+# PackVoltage and PackCurrent, every second, are for the live page only: their
+# product is the power the pack is giving out this second, so instant kW and
+# Wh/km no longer wait for a 0.02 kWh step in EnergyRemaining. The bridge
+# sends them to the app's memory and strips them from what it stores, so they
+# never reach the database. They change constantly only while driving or
+# charging; a parked car sends next to none.
+#
 # ChargePortDoorOpen and DriverSeatBelt are cheaper evidence of the same
 # question: somebody opened the port, or somebody got in and buckled up. All
 # of these change only when something happens, so they cost almost no stream.
@@ -286,8 +293,10 @@ if [ "${TELEMETRY_V3:-0}" = "1" ]; then
       \"RpWindow\":                  {\"interval_seconds\": 10},
       \"PairedPhoneKeyAndKeyFobQty\": {\"interval_seconds\": 300},
       \"ChargePortDoorOpen\":         {\"interval_seconds\": 60},
-      \"DriverSeatBelt\":             {\"interval_seconds\": 30}"
-  say "Level 3: four windows, paired-key count, charge port door, driver seat belt"
+      \"DriverSeatBelt\":             {\"interval_seconds\": 30},
+      \"PackVoltage\":                {\"interval_seconds\": 1},
+      \"PackCurrent\":                {\"interval_seconds\": 1}"
+  say "Level 3: four windows, paired-key count, charge port door, driver seat belt, pack power (live page)"
 fi
 
 # Belt and braces behind the level file, because the level file is local state
@@ -314,6 +323,21 @@ if [ -z "${TELEMETRY_FORCE:-}" ]; then
   [ -n "$HAVE" ] && echo "  car is currently streaming the V$HAVE set" || true
 fi
 
+# The live page's fields stream fast (speed, distance, energy and gear every
+# second — the shortest interval the car takes; level and range every 10 s)
+# only when this box's bridge paces the stored
+# path back down to the cadence the rest of the app was built on (DB_INTERVALS
+# in bridge.py). An older bridge would pass the fast stream straight into the
+# database, so with one the classic intervals are kept.
+if grep -q '^DB_INTERVALS' /opt/tesla-bridge/bridge.py 2>/dev/null; then
+  FAST_DRIVE=1 FAST_LEVEL=10 FAST_RANGE=10 FAST_GEAR=1
+  say "Fast live stream: speed, distance, energy and gear every second (stored history stays at 10 s)"
+else
+  FAST_DRIVE=10 FAST_LEVEL=60 FAST_RANGE=300 FAST_GEAR=5
+  say "Bridge has no pacer yet: keeping the classic intervals. Update it first:
+     sudo curl -sL $APP_URL/scripts/telemetry/bridge.py -o /opt/tesla-bridge/bridge.py && sudo systemctl restart tesla-bridge"
+fi
+
 say "Building the configuration"
 CA=$(sed ':a;N;$!ba;s/\n/\\n/g' "/etc/letsencrypt/live/$TELEMETRY_HOST/chain.pem")
 cat > "$WORK/config.json" <<EOF
@@ -324,17 +348,17 @@ cat > "$WORK/config.json" <<EOF
     "port": 443,
     "ca": "$CA",
     "fields": {
-      "Gear":                      {"interval_seconds": 5},
+      "Gear":                      {"interval_seconds": $FAST_GEAR},
       "DriverSeatOccupied":        {"interval_seconds": 10},
       "DoorState":                 {"interval_seconds": 10},
-      "VehicleSpeed":              {"interval_seconds": 10},
-      "Odometer":                  {"interval_seconds": 10},
+      "VehicleSpeed":              {"interval_seconds": $FAST_DRIVE},
+      "Odometer":                  {"interval_seconds": $FAST_DRIVE},
       "Location":                  {"interval_seconds": 30},
 $DEFAULT_DRIVE_COUNTER
-      "EnergyRemaining":           {"interval_seconds": 10},
-      "Soc":                       {"interval_seconds": 60},
-      "BatteryLevel":              {"interval_seconds": 60},
-      "RatedRange":                {"interval_seconds": 300},
+      "EnergyRemaining":           {"interval_seconds": $FAST_DRIVE},
+      "Soc":                       {"interval_seconds": $FAST_LEVEL},
+      "BatteryLevel":              {"interval_seconds": $FAST_LEVEL},
+      "RatedRange":                {"interval_seconds": $FAST_RANGE},
       "DetailedChargeState":       {"interval_seconds": 30},
       "ChargePortLatch":           {"interval_seconds": 60},
       "ACChargingPower":           {"interval_seconds": 60},

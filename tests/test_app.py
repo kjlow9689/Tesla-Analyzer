@@ -12509,3 +12509,228 @@ def test_charge_end_level_refuses_a_reading_taken_on_a_drive():
                                                     state.TELEMETRY_CHARGE_SHADOW_KEY)
                                       else "[]"))
             s.commit()
+
+
+def test_live_reports_the_drive_in_flight_and_the_car_now():
+    """/api/live answers from the telemetry stream in memory alone — the car
+    now, and the drive since it left Park — and never reads the database."""
+    import json as _json
+    from datetime import datetime as _dtm, timedelta as _td, timezone as _tz
+
+    from app.api import routes as routes_mod
+
+    settings = get_settings()
+    old = settings.app_passcode
+    settings.app_passcode = ""
+    vin = "LIVEMEM000000001"
+    t0 = _dtm.now(_tz.utc) - _td(seconds=300)    # the stop in P lands on "now"
+    at = lambda d: (t0 + _td(seconds=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mi = 1.609344
+    fold = lambda d, f: routes_mod._live_mem_fold(vin, at(d), f)
+    reads = []
+    real = routes_mod._live_from_stream
+    routes_mod._live_from_stream = lambda *a: reads.append(1) or real(*a)
+    try:
+        with TestClient(app) as client:
+            get = lambda: client.get(f"/api/live?vin={vin}&capacity_kwh=68.3").json()
+            routes_mod._LIVE_MEM.pop(vin, None)
+            empty = get()
+            assert empty["now"] is None and empty["driving"] is False
+
+            # Parked and awake: the car now, no drive.
+            fold(0, {"Gear": "ShiftStateP", "VehicleSpeed": 0.0, "Odometer": 100.0 / mi,
+                     "EnergyRemaining": 60.0, "BatteryLevel": 80.5})
+            parked = get()
+            assert parked["driving"] is False and parked["trip"] is None
+            assert parked["now"]["energy_kwh"] == 60.0 and parked["now"]["battery_level"] == 80.5
+
+            # Sitting awake in P for a minute is not drive time; leaving P
+            # starts the drive from the last parked reading.
+            fold(60, {"Gear": "ShiftStateD", "VehicleSpeed": 8.0,
+                      "Odometer": 100.05 / mi, "EnergyRemaining": 59.98})
+            fold(120, {"VehicleSpeed": 30.0, "Odometer": 100.5 / mi, "EnergyRemaining": 59.9})
+            go = get()
+            assert go["driving"] is True
+            assert go["trip"]["distance_km"] == 0.5
+            assert go["trip"]["energy_kwh"] == 0.1
+            assert go["trip"]["duration_min"] == 1
+
+            # Every reading moves it at once.
+            fold(122, {"VehicleSpeed": 42.0, "Odometer": 100.6 / mi, "EnergyRemaining": 59.88})
+            assert get()["trip"]["distance_km"] == 0.6
+
+            # Pack power every second: the sign is learned standing still
+            # (only discharge is possible there), and the drive's energy is
+            # summed from it, so Wh/km moves every second.
+            for k in range(10):
+                fold(123 + k, {"VehicleSpeed": 0.0 if k < 5 else 20.0,
+                               "PackVoltage": 360.0, "PackCurrent": -50.0})   # 18 kW drawn
+            p = get()
+            assert p["now"]["power_kw"] == 18.0
+            # 0.12 kWh by the energy reading before power began, then 9
+            # one-second steps at 18 kW = 0.045 kWh.
+            assert p["trip"]["energy_kwh"] == 0.16
+            fold(133, {"PackVoltage": 360.0, "PackCurrent": 20.0})            # regen
+            assert get()["now"]["power_kw"] == -7.2
+                        # Wh/km is held at the last odometer tick: seconds of power with
+            # no odometer change must not move it.
+            fold(134, {"Odometer": 100.8 / mi})
+            held = get()["trip"]["wh_per_km"]
+            for k in range(5):
+                fold(135 + k, {"PackVoltage": 360.0, "PackCurrent": -50.0})
+            assert get()["trip"]["wh_per_km"] == held
+            fold(140, {"Odometer": 100.9 / mi})
+            assert get()["trip"]["wh_per_km"] != held
+            # A stop in P keeps the drive open, as the car's Current Drive does...
+            fold(300, {"Gear": "ShiftStateP", "VehicleSpeed": 0.0})
+            assert get()["driving"] is True
+            # ...until it has lasted the 15 minutes the car allows to power down.
+            fold(300 + 16 * 60, {"VehicleSpeed": 0.0})
+            assert get()["driving"] is False
+
+            # The pushed stream sends the same answer the moment it connects.
+            import asyncio
+
+            class _Req:
+                async def is_disconnected(self):
+                    return False
+
+            async def first_frame():
+                resp = await routes_mod.live_stream(_Req(), vin, 68.3)
+                assert resp.media_type == "text/event-stream"
+                it = resp.body_iterator
+                try:
+                    return await it.__anext__()
+                finally:
+                    await it.aclose()
+
+            first = asyncio.run(first_frame())
+            assert first.startswith("data: ")
+            assert _json.loads(first[6:])["now"]["battery_level"] == 80.5
+        assert reads == []
+    finally:
+        routes_mod._live_from_stream = real
+        routes_mod._LIVE_MEM.pop(vin, None)
+        settings.app_passcode = old
+
+
+def test_live_memory_edge_cases():
+    """Older records fill in fields without overwriting newer ones; a car known
+    to be in Park is not moving whatever speed it last sent, but an unknown gear
+    after a restart does not read as stopped; and the power sign is not learned
+    while charging."""
+    from datetime import datetime as _dtm, timedelta as _td, timezone as _tz
+
+    from app.api import routes as routes_mod
+
+    vin = "LIVEEDGE000000001"
+    t0 = _dtm.now(_tz.utc) - _td(seconds=60)
+    at = lambda d: (t0 + _td(seconds=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fold = lambda d, f: routes_mod._live_mem_fold(vin, at(d), f)
+    payload = lambda: routes_mod._live_payload(vin, 68.3)
+    mi = 1.609344
+    try:
+        # 1. A trailing record: temperature merges, speed is not overwritten.
+        routes_mod._LIVE_MEM.pop(vin, None)
+        fold(10, {"Gear": "ShiftStateD", "VehicleSpeed": 40.0, "Odometer": 100.0 / mi})
+        fold(5, {"OutsideTemp": 27.0, "VehicleSpeed": 3.0})
+        now = payload()["now"]
+        assert now["out_temp"] == 27.0
+        assert now["speed_kmh"] == round(40.0 * mi, 1) or abs(now["speed_kmh"] - 40.0 * mi) < 0.1
+
+        # 2. Park wins over a stale speed, once the gear is known.
+        routes_mod._LIVE_MEM.pop(vin, None)
+        fold(0, {"Gear": "ShiftStateD", "VehicleSpeed": 12.0, "Odometer": 100.0 / mi})
+        assert payload()["driving"] is True
+        fold(20, {"Gear": "ShiftStateP"})            # no fresh speed ever arrives
+        p = payload()
+        assert p["now"]["speed_kmh"] == 0.0
+        # ...but a restart mid-drive, gear not yet heard, still shows the speed.
+        routes_mod._LIVE_MEM.pop(vin, None)
+        fold(30, {"VehicleSpeed": 50.0})
+        assert abs(payload()["now"]["speed_kmh"] - 50.0 * mi) < 0.1
+
+        # 3. Power sign: charging at a standstill teaches nothing; standing in
+        # gear does.
+        routes_mod._LIVE_MEM.pop(vin, None)
+        for k in range(5):
+            fold(k, {"Gear": "ShiftStateP", "VehicleSpeed": 0.0,
+                     "DetailedChargeState": "DetailedChargeStateCharging",
+                     "PackVoltage": 380.0, "PackCurrent": -30.0})
+        assert not routes_mod._LIVE_MEM[vin].get("_sign")
+        assert payload()["now"]["power_kw"] is None
+        for k in range(5, 8):
+            fold(k, {"Gear": "ShiftStateD", "VehicleSpeed": 0.0,
+                     "DetailedChargeState": "DetailedChargeStateDisconnected",
+                     "PackVoltage": 380.0, "PackCurrent": 10.0})
+        assert routes_mod._LIVE_MEM[vin]["_sign"] > 0
+        assert payload()["now"]["power_kw"] == 3.8
+    finally:
+        routes_mod._LIVE_MEM.pop(vin, None)
+
+
+def test_live_memory_survives_malformed_readings():
+    """The fast lane takes whatever arrives with the sync key. A number where a
+    text field belongs, NaN or infinity must neither break every later answer
+    nor put an invalid token in the JSON the browser parses."""
+    import json as _json
+
+    from app.api import routes as routes_mod
+
+    vin = "LIVEBAD0000000001"
+    try:
+        routes_mod._LIVE_MEM.pop(vin, None)
+        for k, f in enumerate([
+            {"Gear": 5.0, "DetailedChargeState": 3.2, "VehicleSpeed": float("nan")},
+            {"Odometer": float("inf"), "PackVoltage": "abc", "PackCurrent": float("-inf")},
+            {"EnergyRemaining": "55.5", "Gear": "ShiftStateD", "VehicleSpeed": 30.0},
+        ]):
+            routes_mod._live_mem_fold(vin, "2026-10-12T10:00:%02dZ" % k, f)
+        out = _json.dumps(routes_mod._live_payload(vin, 68.3))
+        assert "NaN" not in out and "Infinity" not in out
+        car = routes_mod._LIVE_MEM[vin]
+        assert car.get("Gear") == "ShiftStateD" and car.get("EnergyRemaining") == 55.5
+        assert "PackVoltage" not in car and "Odometer" not in car
+    finally:
+        routes_mod._LIVE_MEM.pop(vin, None)
+
+
+def test_the_live_fast_lane_stays_in_memory():
+    """/api/telemetry/live folds records into memory for the live page and
+    writes nothing; pack power comes from voltage x current; and the same
+    fields arriving through the stored path are kept out of the database."""
+    import json as _json
+    from app import state
+    from app.api import routes as routes_mod
+    from app.database import SessionLocal
+
+    settings = get_settings()
+    old_pc, old_sk = settings.app_passcode, settings.sync_key
+    settings.app_passcode, settings.sync_key = "pc", "k"
+    vin = "LIVEFAST00000001"
+    try:
+        with TestClient(app) as client:
+            with SessionLocal() as s:
+                before = state.get(s, state.TELEMETRY_LATEST_KEY)
+            rec = {"vin": vin, "createdAt": "2026-10-12T00:10:00Z", "data": [
+                {"key": "PackVoltage", "value": {"doubleValue": 380.0}},
+                {"key": "PackCurrent", "value": {"doubleValue": 50.0}},
+                {"key": "VehicleSpeed", "value": {"doubleValue": 31.0}}]}
+            r = client.post("/api/telemetry/live", json={"records": [rec]}, headers={"x-sync-key": "k"})
+            assert r.status_code == 200
+            with SessionLocal() as s:
+                assert state.get(s, state.TELEMETRY_LATEST_KEY) == before
+            client.cookies.set("tesla_passcode", "x")
+            settings.app_passcode = ""
+            now = client.get(f"/api/live?vin={vin}").json()["now"]
+            assert now["source"] == "memory" and now["power_kw"] == 19.0
+
+            # Through the stored path: the composite never holds them.
+            rec2 = dict(rec, createdAt="2026-10-12T00:10:05Z")
+            client.post("/api/telemetry", json={"records": [rec2]}, headers={"x-sync-key": "k"})
+            with SessionLocal() as s:
+                car = _json.loads(state.get(s, state.TELEMETRY_LATEST_KEY) or "{}").get(vin, {})
+            assert "PackCurrent" not in car and "VehicleSpeed" in car
+    finally:
+        settings.app_passcode, settings.sync_key = old_pc, old_sk
+        routes_mod._LIVE_MEM.pop(vin, None)
