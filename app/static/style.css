@@ -2462,7 +2462,7 @@ main > .card { max-width: 100%; }
   .gl-side > .gl-trip .gl-rt i svg { width: 11px; height: 11px; }
   .gl-side > .gl-trip .gl-rt span { letter-spacing: 0; font-size: 8.5px; }
   /* Narrow phones: the odometer icon says what the reading is. */
-  .gl-odo span { display: none; }
+  .gl-odo span { font-size: 8.5px; letter-spacing: .02em; }
   .gl-odo { padding: 4px 8px; }
 }
 
@@ -2616,4 +2616,16 @@ main > .card { max-width: 100%; }
   .gl-3 > .gl-side:has(> .gl-power) .gl-trace svg { min-height: 22px; }
   .gl-3 > .gl-side:has(> .gl-power) .gl-minis { margin-top: 4px; }
   .gl-3 > .gl-side:has(> .gl-power) .gl-power-sub { display: none; }
+}
+/* Left tiles' labels as bright as the right column's (EST. RANGE, REGEN),
+   dimmed or not; the odometer line opens with its label. */
+.gl-rt span, .gl-odo span { color: #9fb0c3; }
+.gl-dim .gl-rt i { opacity: .75; }
+.gl-odo span { flex: 0 0 auto; font-size: 9.5px; letter-spacing: .06em; }
+/* The narrowest phones (iPhone SE 1st gen, 568 px wide): the tile icons give
+   way so every label reads whole, and Est. range shortens to Range. */
+@media (orientation: landscape) and (max-width: 600px) {
+  .gl-side > .gl-trip .gl-rt i { display: none; }
+  .gl-side > .gl-trip .gl-rt span { font-size: 8px; letter-spacing: 0; }
+  .gl-mini span { font-size: 8px; letter-spacing: .02em; }
 }
