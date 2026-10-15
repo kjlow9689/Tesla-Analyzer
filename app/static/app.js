@@ -1680,15 +1680,33 @@ let lastRenderedCharges = [];
 // keeps the tap's permission to write the clipboard.
 let liveViews = null;
 function loadLiveViews() {
-  fetch("/api/live/views", { credentials: "same-origin" })
+  fetch("/api/live/views?days=3", { credentials: "same-origin" })
     .then((r) => (r.ok ? r.json() : []))
     .then((v) => { liveViews = Array.isArray(v) ? v : []; })
     .catch(() => {});
+}
+// Kept fresh while the dashboard is on screen: a spell that has just ended
+// (or is still running) is on the server's list, and a copy reads this one.
+setInterval(() => { if (!document.hidden && liveViews) loadLiveViews(); }, 60000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && liveViews) loadLiveViews(); });
+function liveViewPollPct(t) {
+  if (!liveViews || !t || !t.start_time || !t.end_time) return null;
+  const a = new Date(t.start_time).getTime() / 1000, b = new Date(t.end_time).getTime() / 1000 + 60;
+  const vin = lastData && lastData.vehicle && lastData.vehicle.vin;
+  let all = 0, poll = 0;
+  for (const [v, s, e, ns, np] of liveViews) {
+    if ((vin && v && v !== vin) || !(ns + np > 0)) continue;
+    const o = Math.max(0, Math.min(b, e) - Math.max(a, s));
+    all += o; poll += o * np / (ns + np);
+  }
+  return all > 0 ? Math.round(100 * poll / all) : null;
 }
 function liveViewMin(t) {
   if (!liveViews || !t || !t.start_time || !t.end_time) return null;
   const a = new Date(t.start_time).getTime() / 1000, b = new Date(t.end_time).getTime() / 1000 + 60;
   if (!(b > a)) return null;
+  // The list covers 3 days: older trips are unknown, not zero.
+  if (a < Date.now() / 1000 - 3 * 86400) return null;
   const vin = lastData && lastData.vehicle && lastData.vehicle.vin;
   let sec = 0;
   for (const [v, s, e] of liveViews) {
@@ -1782,6 +1800,9 @@ function tripDiagnostics(t, ctx) {
       // Minutes the Live page was on the phone's screen during this trip,
       // to set against the phone's own battery use for that drive.
       live_view_min: liveViewMin(t),
+      // Share of that time the page was fed by polling instead of the stream:
+      // high means the phone's stream does not hold and it asks every second.
+      live_view_polling_pct: liveViewPollPct(t),
       data_quality: t.data_quality, distance_flag: t.distance_flag,
       // The parked gap before this trip: a 0.0 kWh reading over a long park
       // is itself a symptom (drain that moved into the drive).
@@ -4880,7 +4901,7 @@ async function glLivePoll() {
     || Date.now() - Math.max(glLiveState.esLast || 0, glLiveState.esOpened || 0) > 20000;
   if (quiet) {
     try {
-      const r = await fetch("/api/live?" + q, { credentials: "same-origin" });
+      const r = await fetch("/api/live?view=1&" + q, { credentials: "same-origin" });
       if (r.ok) glLiveApply(await r.json());
     } catch (_) { /* offline: try again shortly */ }
   }

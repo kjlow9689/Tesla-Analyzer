@@ -1944,6 +1944,7 @@ def health(session: Session = Depends(get_session)):
     mode = "live" if state.is_live(session) else ("imported" if source == "imported" else "demo")
     settings = get_settings()
     promotion, continuity = _cached_health_checks(session)
+    _live_flush_spells()
     return {
         "status": "ok",
         "mode": mode,
@@ -15415,22 +15416,77 @@ def _live_payload(vin: str | None, capacity_kwh: float | None) -> dict:
 def live_now(
     vin: str | None = Query(None),
     capacity_kwh: float | None = Query(None, gt=20, lt=200),
+    view: int = Query(0),
 ):
     """The car right now, for the live driving view — from the telemetry
     stream in memory, never the database. The trip readout (distance, time,
     energy since leaving Park) is tracked in memory too (_live_mem_fold).
     ``power_kw`` is pack voltage x current when the car streams them,
-    discharge positive."""
+    discharge positive.
+
+    ``view=1`` marks a request from the Live page itself (its polling
+    fallback), which counts as the page being on screen; the garage's live
+    line asks without it."""
+    if view:
+        target = vin or _live_latest_vin()
+        closed = _live_touch(target, "poll") if target else None
+        if closed:
+            _record_live_view(target, *closed)
     return _live_payload_safe(vin, capacity_kwh)
 
 
-LIVE_VIEWS_MAX = 400
+LIVE_VIEWS_MAX = 200
+# A spell of the Live page on screen: from its first request or stream frame
+# to its last, joined across gaps up to LIVE_SPELL_GAP seconds (a signal drop
+# while the phone reconnects). Kept in memory while it runs and saved once it
+# ends; the page asks either over the stream or, when that goes quiet, once a
+# second, and both count.
+LIVE_SPELL_GAP = 20.0
+LIVE_SPELL_MIN = 10.0
+_LIVE_SPELLS: dict[str, list] = {}     # vin -> [start, last]
+_LIVE_SPELL_LOCK = threading.Lock()
 
 
-def _record_live_view(vin: str, start: float, end: float) -> None:
+def _live_touch(vin: str, kind: str = "stream"):
+    """The Live page asked for this car just now, over the stream or by
+    polling. Returns (start, last, stream_n, poll_n) of a spell that this call
+    finds ended, for the caller to save, else None. The two counts say which
+    way the page was being fed: a phone that mostly polls is one whose stream
+    does not hold."""
+    now = time.time()
+    i = 2 if kind == "stream" else 3
+    with _LIVE_SPELL_LOCK:
+        sp = _LIVE_SPELLS.get(vin)
+        if sp and now - sp[1] <= LIVE_SPELL_GAP:
+            sp[1] = now
+            sp[i] += 1
+            return None
+        fresh = [now, now, 0, 0]
+        fresh[i] = 1
+        _LIVE_SPELLS[vin] = fresh
+    return tuple(sp) if sp and sp[1] - sp[0] >= LIVE_SPELL_MIN else None
+
+
+def _live_flush_spells() -> None:
+    """Save every spell that has gone quiet. Called from the health check
+    (a cron hits it every few minutes) and when the views are read, so a
+    spell is on record soon after it ends even if the page never asks again."""
+    now = time.time()
+    done = []
+    with _LIVE_SPELL_LOCK:
+        for vin, sp in list(_LIVE_SPELLS.items()):
+            if now - sp[1] > LIVE_SPELL_GAP:
+                done.append((vin, *sp))
+                del _LIVE_SPELLS[vin]
+    for vin, start, end, ns, np_ in done:
+        if end - start >= LIVE_SPELL_MIN:
+            _record_live_view(vin, start, end, ns, np_)
+
+
+def _record_live_view(vin: str, start: float, end: float, ns: int = 0, np_: int = 0) -> None:
     """Remember one spell of the Live page on screen (see
-    state.TELEMETRY_LIVE_VIEWS_KEY). Never raises: this runs as a stream
-    closes and must not turn a disconnect into an error."""
+    state.TELEMETRY_LIVE_VIEWS_KEY): [vin, open, close, stream_n, poll_n].
+    Never raises."""
     from ..database import SessionLocal
 
     try:
@@ -15440,8 +15496,8 @@ def _record_live_view(vin: str, start: float, end: float) -> None:
             except ValueError:
                 views = []
             cut = time.time() - 30 * 86400
-            views = [v for v in views if isinstance(v, list) and len(v) == 3 and v[2] >= cut]
-            views.append([vin, round(start, 1), round(end, 1)])
+            views = [v for v in views if isinstance(v, list) and len(v) >= 3 and v[2] >= cut]
+            views.append([vin, round(start, 1), round(end, 1), int(ns), int(np_)])
             state.put(s, state.TELEMETRY_LIVE_VIEWS_KEY, _json_mod.dumps(views[-LIVE_VIEWS_MAX:]))
     except Exception:   # noqa: BLE001
         import logging
@@ -15449,13 +15505,22 @@ def _record_live_view(vin: str, start: float, end: float) -> None:
 
 
 @router.get("/live/views")
-def live_views(session: Session = Depends(get_session)):
-    """When the Live page was on screen, for the trip list to say how long it
-    was watched during each drive: [[vin, open_ts, close_ts], ...]."""
+def live_views(days: float = Query(3, gt=0, le=30), session: Session = Depends(get_session)):
+    """When the Live page was on screen in the last ``days``, for the trip
+    list to say how long it was watched during each drive, and how it was fed:
+    [[vin, open_ts, close_ts, stream_n, poll_n], ...], the spell still running
+    included."""
+    _live_flush_spells()
     try:
-        return _json_mod.loads(state.get(session, state.TELEMETRY_LIVE_VIEWS_KEY) or "[]") or []
+        views = _json_mod.loads(state.get(session, state.TELEMETRY_LIVE_VIEWS_KEY) or "[]") or []
     except ValueError:
-        return []
+        views = []
+    cut = time.time() - days * 86400
+    out = [v for v in views if isinstance(v, list) and len(v) >= 3 and v[2] >= cut]
+    with _LIVE_SPELL_LOCK:
+        out += [[vin, round(sp[0], 1), round(sp[1], 1), sp[2], sp[3]]
+                for vin, sp in _LIVE_SPELLS.items() if sp[1] - sp[0] >= 1.0]
+    return out
 
 
 @router.get("/live/stream")
@@ -15476,22 +15541,23 @@ async def live_stream(
     from fastapi.responses import StreamingResponse
 
     async def events():
-        last_v, last_beat, opened = None, time.monotonic(), time.monotonic()
-        wall_open = time.time()
-        try:
-            async for chunk in _events(last_v, last_beat, opened):
-                yield chunk
-        finally:
-            # One small write per viewing, after it ends: never per frame.
-            target = vin or _live_latest_vin()
-            if target and time.time() - wall_open >= 10:
-                await asyncio.to_thread(_record_live_view, target, wall_open, time.time())
-
-    async def _events(last_v, last_beat, opened):
+        # A frame goes out the moment the stream opens (the sentinel never
+        # equals a real counter): otherwise a parked car with nothing new to
+        # say left the page waiting 15 s for its first frame, polling meanwhile.
+        last_v, last_beat, opened = object(), time.monotonic(), time.monotonic()
+        last_touch = 0.0
         while time.monotonic() - opened < 3600:
             if await request.is_disconnected():
                 return
             target = vin or _live_latest_vin()
+            # The Live page is on screen while this connection is open: noted
+            # once a second (see _live_touch), so a drop that never closes
+            # the connection cleanly still leaves the spell it was.
+            if target and time.monotonic() - last_touch >= 1.0:
+                last_touch = time.monotonic()
+                closed = _live_touch(target)
+                if closed:
+                    await asyncio.to_thread(_record_live_view, target, *closed)
             car = _LIVE_MEM.get(target) if target else None
             v = (car or {}).get("_v")
             if v != last_v:
