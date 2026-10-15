@@ -6251,10 +6251,11 @@ def test_a_corrected_row_can_be_put_back_the_way_polling_had_it():
             # Promotion now runs on telemetry ingest as well as on the sync
             # tick, so any earlier test that posted a batch has left rows of
             # its own in this shared database. Cleared first, or this measures
-            # them instead of its own.
+            # them instead of its own - corrected rows included: one left by
+            # an earlier test within the last 7 days was counted as restored
+            # here, so this failed or passed by the time of day it ran.
             for stray in sess.scalars(
-                    select(Drive).where(Drive.source == "telemetry",
-                                        Drive.polled_km.is_(None))).all():
+                    select(Drive).where(Drive.source == "telemetry")).all():
                 sess.delete(stray)
             sess.commit()
             vehicle = Vehicle(vin="UNDO00000000001", name="Test", model="Model 3")
@@ -12901,3 +12902,37 @@ def test_live_page_viewing_time_is_recorded():
     with SessionLocal() as s:
         kept = json.loads(state.get(s, state.TELEMETRY_LIVE_VIEWS_KEY))
     assert all(v[2] >= now - 30 * 86400 for v in kept) and len(kept) == 2
+
+
+def test_live_wh_per_km_keeps_counting_energy_once_stopped():
+    """The car's Current Drive keeps adding the energy spent standing in P, so
+    its Wh/km climbs while parked. The live figure is held at the last
+    odometer tick only while moving; stopped, it follows the energy so far."""
+    import time as _t
+    from datetime import datetime, timezone
+
+    from app.api import routes
+
+    def at(sec):
+        return datetime.fromtimestamp(_t.time() + sec, timezone.utc).isoformat()
+
+    routes._LIVE_MEM.clear()
+    try:
+        vin = "VSTOPWH"
+        t0 = -120
+        odo = 1000.0
+        for i in range(60):
+            odo += 0.05
+            routes._live_mem_fold(vin, at(t0 + i), {
+                "Gear": "ShiftStateD", "VehicleSpeed": 50.0, "Odometer": odo,
+                "EnergyRemaining": 60.0 - i * 0.01, "PackVoltage": 360.0, "PackCurrent": 25.0})
+        moving = routes._live_payload(vin, 70.0)["trip"]["wh_per_km"]
+        # Stopped in Park for a while, still drawing 2 kW; no odometer tick.
+        for k in range(1, 40):
+            routes._live_mem_fold(vin, at(t0 + 60 + k * 3), {
+                "Gear": "ShiftStateP", "VehicleSpeed": 0.0,
+                "PackVoltage": 360.0, "PackCurrent": 5.6})
+        stopped = routes._live_payload(vin, 70.0)["trip"]["wh_per_km"]
+        assert stopped > moving * 1.05, (moving, stopped)
+    finally:
+        routes._LIVE_MEM.clear()
