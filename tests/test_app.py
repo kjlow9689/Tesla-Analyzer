@@ -13174,3 +13174,52 @@ def test_trip_tag_follows_the_office_place_when_one_is_defined():
                 for n, la, lo, r, c in snapshot:
                     s.add(Place(name=n, lat=la, lon=lo, radius_km=r, created_at=c))
                 s.commit()
+
+
+def test_live_ignores_a_record_stamped_in_the_future():
+    """A record with a clock hours ahead must not freeze the page on the old
+    gear and speed (it read parked, '0s ago', for a car moving 22 min)."""
+    import time as _t
+    from datetime import datetime, timezone
+
+    from app.api import routes
+
+    def at(sec):
+        return datetime.fromtimestamp(_t.time() + sec, timezone.utc).isoformat()
+
+    routes._LIVE_MEM.clear()
+    try:
+        vin = "VFUTURE"
+        routes._live_mem_fold(vin, at(-30), {"Gear": "ShiftStateP", "VehicleSpeed": 0.0, "Odometer": 100.0})
+        routes._live_mem_fold(vin, at(+7200), {"Gear": "ShiftStateP", "VehicleSpeed": 0.0})   # clock 2 h ahead
+        for i in range(20):
+            routes._live_mem_fold(vin, at(1 + i * 0.1), {"Gear": "ShiftStateD", "VehicleSpeed": 40.0,
+                                                         "Odometer": 100.0 + 0.011 * i})
+        now = routes._live_payload(vin, 70.0)["now"]
+        assert now["shift"] == "D" and now["speed_kmh"] > 0, now
+    finally:
+        routes._LIVE_MEM.clear()
+
+
+def test_live_debug_view_shows_what_the_answer_is_built_from():
+    import time as _t
+    from datetime import datetime, timezone
+
+    from app.api import routes
+
+    routes._LIVE_MEM.clear()
+    try:
+        routes._live_mem_fold("VDEBUG1234567", datetime.fromtimestamp(_t.time(), timezone.utc).isoformat(),
+                              {"Gear": "ShiftStateD", "VehicleSpeed": 30.0, "Odometer": 10.0})
+        settings = get_settings()
+        old = settings.app_passcode
+        settings.app_passcode = ""
+        try:
+            with TestClient(app) as client:
+                j = client.get("/api/live?vin=VDEBUG1234567&debug=1").json()
+        finally:
+            settings.app_passcode = old
+        assert j["vin_tail"] == "234567" and j["car"]["Gear"] == "ShiftStateD"
+        assert set(j["field_ages_s"]) >= {"Gear", "VehicleSpeed"} and "answer" in j
+    finally:
+        routes._LIVE_MEM.clear()

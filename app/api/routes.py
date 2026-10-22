@@ -15226,6 +15226,13 @@ def _live_mem_fold(vin: str | None, created_at, fields: dict) -> None:
 
 def _live_mem_fold_locked(vin: str, created_at, fields: dict) -> None:
     ts = _telemetry_ts(created_at)
+    if ts > time.time() + 1800.0:
+        # A stamp from the future (over half an hour ahead) (a relay or car with a wrong clock). Kept as
+        # written it would out-rank every true record after it, per field and
+        # for the drive logic alike: the page would hold the old gear and
+        # speed while its age read "0s ago" for as long as the clock lasted.
+        ts = time.time()
+        created_at = ts
     car = _LIVE_MEM.setdefault(vin, {})
     # Each field keeps the time of the record it came from, so an older record
     # (the bridge's stored batches trail the fast lane by seconds) still fills in
@@ -15475,6 +15482,7 @@ def live_now(
     vin: str | None = Query(None),
     capacity_kwh: float | None = Query(None, gt=20, lt=200),
     view: int = Query(0),
+    debug: int = Query(0),
 ):
     """The car right now, for the live driving view — from the telemetry
     stream in memory, never the database. The trip readout (distance, time,
@@ -15490,6 +15498,25 @@ def live_now(
         closed = _live_touch(target, "poll") if target else None
         if closed:
             _record_live_view(target, *closed)
+    if debug:
+        # What the page's answer is built from, raw: for diagnosing a Live
+        # page that disagrees with the car. Same gate as every API; the VIN
+        # is cut to its last six characters.
+        target = vin or _live_latest_vin()
+        car = dict(_LIVE_MEM.get(target) or {}) if target else {}
+        keep = ("Gear", "VehicleSpeed", "Odometer", "EnergyRemaining", "BatteryLevel",
+                "BrakePedal", "PackVoltage", "PackCurrent", "_t", "_ts", "_seen", "_v", "_sign", "_stop")
+        go = car.get("_go")
+        return {
+            "vin_tail": (target or "")[-6:], "server_ts": round(time.time(), 1),
+            "car": {k: car.get(k) for k in keep},
+            "field_ages_s": {k: round(time.time() - float(t), 1)
+                             for k, t in (car.get("_kt") or {}).items()
+                             if k in ("Gear", "VehicleSpeed", "Odometer", "PackCurrent")},
+            "go": ({k: go.get(k) for k in ("ts", "odo_km", "energy_kwh", "max_speed")}
+                   if isinstance(go, dict) else None),
+            "answer": _live_payload_safe(vin, capacity_kwh),
+        }
     return _live_payload_safe(vin, capacity_kwh)
 
 
