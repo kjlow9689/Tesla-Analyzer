@@ -4952,9 +4952,401 @@ function glAutoLive(d) {
   }
 }
 
+// Swipeable Live designs. 0 is the Cockpit (the page this app has always had);
+// the others show the same readings differently, each for a different glance:
+// a huge speed, the energy flow, or the trip in big figures. Swipe left or
+// right on the Live page, or tap the dots.
+const GL_SKINS = ["Cockpit", "HUD", "Energy", "Trip", "Night", "Dial", "Range", "Mix", "Round Mix", "Stack", "Lines", "Graph"];
+// Two rows of designs. Left and right swipe through the single-purpose ones;
+// up and down through the combinations, which put several readings together.
+const GL_SINGLE = [0, 1, 4, 5, 6, 3, 10];    // Cockpit, HUD, Night, Dial, Range, Trip, Lines
+const GL_COMBO = [7, 8, 2, 9, 11];           // Mix, Round Mix, Energy, Stack, Graph
+let glLiveSkin = 0;
+function glSkinSet(id, from) {
+  glLiveSkin = GL_SKINS[id] ? id : 0;
+  try { localStorage.setItem("glLiveSkin", String(glLiveSkin)); } catch (_) { /* private mode */ }
+  glDimArm();
+  if (typeof lastData !== "undefined" && lastData) renderGlance(lastData);
+  // The new design slides in from the side the swipe came from (once; the
+  // animation is off while the screen is dimmed or in eco mode).
+  const pageEl = from && document.querySelector("#glance .gl-alt");
+  if (pageEl) pageEl.classList.add("gl-in-" + from);
+}
+// Axis "h" walks the single designs, "v" the combinations. Coming from the
+// other row, a swipe enters this one at its first design.
+function glSkinStep(axis, dir) {
+  const list = axis === "h" ? GL_SINGLE : GL_COMBO;
+  const at = list.indexOf(glLiveSkin);
+  glSkinSet(at < 0 ? list[0] : list[(at + dir + list.length) % list.length],
+    axis === "h" ? (dir > 0 ? "r" : "l") : (dir > 0 ? "b" : "t"));
+}
+const glSkinColour = (x) => (x > 140 ? "#e040fb" : x > 120 ? "#ff3b3b" : x > 100 ? "#ff8a1f"
+  : x > 80 ? "#ffe03a" : x > 60 ? "#2ee86a" : x > 30 ? "#19e3f5" : "#3d7bff");
+const glSkinDots = () => {
+  const dot = (id, cls) => `<button type="button" class="${cls}${id === glLiveSkin ? " on" : ""}" data-gl-skin="${id}" title="${GL_SKINS[id]}" aria-label="${GL_SKINS[id]}"></button>`;
+  return `<span class="gl-dots" role="tablist" aria-label="Live design">${GL_SINGLE.map((id) => dot(id, "")).join("")}<i></i>${GL_COMBO.map((id) => dot(id, "cb")).join("")}</span>`;
+};
+
+// Every design opens with the same slim strip of the things worth a glance
+// while driving: the time, the outside temperature, whether the climate is
+// on, and (when a destination is known) the arrival. The least important
+// are dropped first on a narrow screen (see glKeyFit).
+function glKeyBar(c) {
+  const { t, nw } = c;
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0");
+  const chips = [
+    `<span class="gl-kb"><em>Time</em><b>${hh}</b></span>`,
+    c.rangeHere != null || c.range != null ? `<span class="gl-kb gl-opt"><em>Range</em><b>${c.n(c.rangeHere != null ? c.rangeHere : c.range)} km</b></span>` : "",
+    nw.out_temp != null ? `<span class="gl-kb gl-opt"><em>Outside</em><b>${c.n(nw.out_temp, 0)}°C</b></span>` : "",
+    t && t.eta ? `<span class="gl-kb gl-opt"><em>ETA ${c.h(t.eta.place)}</em><b>${c.n(t.eta.eta_min)} min</b></span>` : "",
+    nw.climate_on != null ? `<span class="gl-kb gl-opt"><em>Climate</em><b>${nw.climate_on ? "on" : "off"}</b></span>` : "",
+    t && t.regen_kwh != null && c.skin !== 2 ? `<span class="gl-kb gl-opt"><em>Regen</em><b>${c.n(t.regen_kwh, 2)} kWh</b></span>` : "",
+  ];
+  return `<div class="gl-keybar">${chips.join("")}</div>`;
+}
+function glAltSkin(skin, c) {
+  c.skin = skin; c.h = h;
+  // The whole page takes the speed's colour: --spd for borders, bars and the
+  // speed line along the top, --spdp (0-100) for how long that line is.
+  const sp = c.spd != null && c.spd > 0.5 ? c.spd : 0;
+  const spCol = glSkinColour(sp);
+  return `<div class="gl-page gl-altwrap" style="--spd:${spCol};--spdp:${Math.min(100, sp / 160 * 100).toFixed(1)}">${glKeyBar(c)}${glAltPage(skin, c)}</div>`;
+}
+function glKeyFit(root) {
+  const f = (root || document).querySelector(".glance .gl-keybar");
+  if (!f) return;
+  const opt = [...f.querySelectorAll(".gl-opt")];
+  opt.forEach((e) => { e.style.display = ""; });
+  for (let i = opt.length - 1; i >= 0 && f.scrollWidth > f.clientWidth + 1; i--) opt[i].style.display = "none";
+}
+
+// A 3D round gauge: metal bezel, glass dome, glowing speed ring, engraved
+// marks and the speed set into it. `odo` set: a mechanical odometer in the
+// dome; `needle` set: a needle with a shadow instead.
+function glGauge3D(spd, col, nw, odo, needle) {
+  const num = spd != null ? String(Math.round(spd)) : "—";
+  const MAXV = 160, A0 = 135, SW = 270, cx = 100, cy = 100;
+  const v = spd != null ? Math.max(0, Math.min(MAXV, spd)) : 0;
+  const ang = (x) => A0 + x / MAXV * SW;
+  // The whole scale always shows its colours, dimly; the part up to the
+  // speed is lit and glows. A stopped car still has a colourful dial.
+  let ring = "", ringLit = "";
+  for (let k = 0; k < 48; k++) {
+    const x0 = k / 48 * MAXV, x1 = (k + 1) / 48 * MAXV, on = spd != null && x0 + 1.5 <= v;
+    const seg = `<path d="${glArcPath(cx, cy, 86, ang(x0) + 90.5, ang(x1) + 89.5)}" fill="none" stroke="${glSkinColour(x0 + 1.5)}" stroke-width="10"${on ? "" : ' opacity=".2"'}/>`;
+    ring += seg;
+    if (on) ringLit += seg;
+  }
+  const uid = `glr${++glDialSeq}`;
+  const odoDigits = odo != null ? String(Math.round(odo)).split("") : [];
+  // A mechanical odometer: one cylinder cell per digit, dark at the top and
+  // bottom edge and lit in the middle.
+  const CW = 14, ox = 100 - Math.max(odoDigits.length, 1) * CW / 2;
+  const cells = (odoDigits.length ? odoDigits : ["—"]).map((d, k) =>
+    `<rect x="${ox + k * CW + 0.5}" y="131" width="${CW - 1}" height="22" rx="2" fill="url(#${uid}-cyl)" stroke="#000" stroke-opacity=".7" stroke-width=".6"/>
+     <text x="${ox + k * CW + CW / 2}" y="147.5" text-anchor="middle" font-size="14" font-weight="700" fill="#f1f7ff"
+       font-family="ui-monospace,Menlo,monospace" style="paint-order:stroke" stroke="#000" stroke-width=".8" stroke-opacity=".5">${d}</text>`).join("");
+  // A bright bead where the speed reaches along the ring.
+  const ra = ang(v) * Math.PI / 180;
+  const tip = spd != null && spd > 0.5
+    ? `<circle cx="${(100 + 86 * Math.cos(ra)).toFixed(1)}" cy="${(100 + 86 * Math.sin(ra)).toFixed(1)}" r="6.5" fill="#fff" filter="url(#${uid}-glow)"/>
+       <circle cx="${(100 + 86 * Math.cos(ra)).toFixed(1)}" cy="${(100 + 86 * Math.sin(ra)).toFixed(1)}" r="3.4" fill="${col}"/>` : "";
+  let tick = "";
+  for (let x = 0; x <= MAXV; x += 20) {
+    const a = ang(x) * Math.PI / 180, big = x % 40 === 0;
+    tick += `<line x1="${(100 + 71 * Math.cos(a)).toFixed(1)}" y1="${(100 + 71 * Math.sin(a)).toFixed(1)}" x2="${(100 + (big ? 65 : 67.5) * Math.cos(a)).toFixed(1)}" y2="${(100 + (big ? 65 : 67.5) * Math.sin(a)).toFixed(1)}" stroke="${big ? "#9fb0c3" : "#4a5868"}" stroke-width="${big ? 1.4 : 1}"/>`;
+    if (big && x > 0 && x < MAXV) tick += `<text x="${(100 + 58 * Math.cos(a)).toFixed(1)}" y="${(103 + 58 * Math.sin(a)).toFixed(1)}" text-anchor="middle" font-size="7" font-weight="600" fill="#7e93ab">${x}</text>`;
+  }
+  const nrad = ang(v) * Math.PI / 180, nx = 100 + 64 * Math.cos(nrad), ny = 100 + 64 * Math.sin(nrad);
+  const needleSvg = `<line x1="102" y1="104" x2="${(nx + 2).toFixed(1)}" y2="${(ny + 4).toFixed(1)}" stroke="#000" stroke-opacity=".6" stroke-width="4" stroke-linecap="round" filter="url(#${uid}-bl)"/>
+    <line x1="100" y1="100" x2="${nx.toFixed(1)}" y2="${ny.toFixed(1)}" stroke="#f4fbff" stroke-width="3" stroke-linecap="round" filter="url(#${uid}-glow)"/>
+    <line x1="100" y1="100" x2="${nx.toFixed(1)}" y2="${ny.toFixed(1)}" stroke="${col}" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="100" cy="100" r="9" fill="url(#${uid}-bz)" stroke="#000" stroke-width=".8"/>
+    <circle cx="100" cy="100" r="3.2" fill="#0a0f16"/>`;
+  return `<svg viewBox="0 0 200 206" role="img" aria-label="Speed ${num} km/h">
+    <defs>
+      <linearGradient id="${uid}-bz" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#e3eaf4"/><stop offset=".22" stop-color="#7c8898"/><stop offset=".5" stop-color="#1b232f"/>
+        <stop offset=".78" stop-color="#6b7788"/><stop offset="1" stop-color="#cfd8e4"/></linearGradient>
+      <linearGradient id="${uid}-gr" x1="1" y1="1" x2="0" y2="0">
+        <stop offset="0" stop-color="#0a0f16"/><stop offset="1" stop-color="#2a3442"/></linearGradient>
+      <radialGradient id="${uid}-dm" cx=".38" cy=".22" r=".95">
+        <stop offset="0" stop-color="#22344a"/><stop offset=".45" stop-color="#0d1621"/><stop offset="1" stop-color="#04070b"/></radialGradient>
+      <linearGradient id="${uid}-cyl" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#05080c"/><stop offset=".28" stop-color="#1a2330"/><stop offset=".5" stop-color="#34455a"/>
+        <stop offset=".72" stop-color="#1a2330"/><stop offset="1" stop-color="#05080c"/></linearGradient>
+      <linearGradient id="${uid}-gl" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+      <filter id="${uid}-glow" x="-40%" y="-40%" width="180%" height="180%">
+        <feGaussianBlur stdDeviation="2.4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <filter id="${uid}-bl"><feGaussianBlur stdDeviation="3.2"/></filter>
+      <clipPath id="${uid}-cp"><circle cx="100" cy="100" r="62"/></clipPath>
+    </defs>
+    <ellipse cx="100" cy="197" rx="64" ry="6" fill="#000" opacity=".75" filter="url(#${uid}-bl)"/>
+    <circle cx="100" cy="100" r="99" fill="url(#${uid}-bz)"/>
+    <circle cx="100" cy="100" r="95.5" fill="url(#${uid}-gr)"/>
+    <circle cx="100" cy="100" r="93" fill="#05080c" stroke="#000" stroke-width="1"/>
+    <circle cx="100" cy="100" r="92" fill="none" stroke="#fff" stroke-opacity=".07" stroke-width="1"/>
+    <g opacity=".9">${ring}</g>
+    <g filter="url(#${uid}-glow)" style="mix-blend-mode:screen">${ringLit}</g>
+    ${tip}
+    <circle cx="100" cy="100" r="74" fill="url(#${uid}-gr)"/>
+    <circle cx="100" cy="100" r="72.5" fill="url(#${uid}-dm)" stroke="#000" stroke-width="1"/>
+    ${tick}
+    <g clip-path="url(#${uid}-cp)"><ellipse cx="82" cy="58" rx="48" ry="26" fill="url(#${uid}-gl)" transform="rotate(-18 82 58)"/></g>
+    <text x="101.6" y="${(needle ? 41 : 0) + (num.length >= 3 ? 101 : 105)}" text-anchor="middle" font-size="${needle ? (num.length >= 3 ? 40 : 48) : (num.length >= 3 ? 50 : 62)}" font-weight="800" fill="#000" opacity=".7"
+      style="font-variant-numeric:tabular-nums">${num}</text>
+    <text x="100" y="${(needle ? 41 : 0) + (num.length >= 3 ? 98.5 : 102.5)}" text-anchor="middle" font-size="${needle ? (num.length >= 3 ? 40 : 48) : (num.length >= 3 ? 50 : 62)}" font-weight="800" fill="${col}" filter="url(#${uid}-glow)"
+      style="font-variant-numeric:tabular-nums">${num}</text>
+    <text x="100" y="${needle ? 158 : 118}" text-anchor="middle" font-size="8" font-weight="650" letter-spacing="2" fill="#7e93ab">KM/H · ${nw.shift || "P"}</text>
+    ${needle ? needleSvg : `
+    <rect x="${ox - 3}" y="128" width="${Math.max(odoDigits.length, 1) * CW + 6}" height="28" rx="5" fill="#020406" stroke="#4a5868" stroke-width=".8"/>
+    ${cells}
+    <text x="100" y="166" text-anchor="middle" font-size="7" font-weight="650" letter-spacing="2" fill="#6f7f94">ODO KM</text>`}
+  </svg>`;
+}
+
+// c: { t, nw, spd, kw, tw, pct, odo, range, rated, lt, hist, regen, usedPct, h, n }
+// A tall LED ladder for the space beside a round gauge: "speed" lit in the
+// speed colours, "power" (regen below its zero mark) or "whkm" (green under
+// rated, amber over). Segments are always drawn; the lit ones glow.
+function glLadder(kind, c) {
+  const N = 22;
+  const colourStops = (f) => [[0, "#22d3ee"], [.35, "#2ee86a"], [.6, "#ffe03a"], [.8, "#ff8a1f"], [1, "#ff3b3b"]].find(([x]) => f <= x)?.[1] || "#ff3b3b";
+  let segs = "", title = "", scale = "", read = "";
+  if (kind === "speed") {
+    title = "Speed";
+    const lit = c.spd != null && c.spd > 0.5 ? Math.max(1, Math.ceil(Math.min(160, c.spd) / 160 * N)) : 0;
+    for (let i = 0; i < N; i++) segs += `<i class="${i < lit ? "on" : ""}" style="--c:${glSkinColour((i + 0.5) / N * 160)}"></i>`;
+    scale = "<em>160</em><em>120</em><em>80</em><em>40</em><em>0</em>";
+    read = c.spd != null ? `${Math.round(c.spd)}<small>km/h</small>` : "—";
+  } else if (kind === "power") {
+    title = c.kw != null && c.kw < 0 ? "Regen" : "Power";
+    const Z = 6, kw = c.kw;
+    const drive = kw != null && kw > 0 ? Math.max(1, Math.round(Math.min(150, kw) / 150 * (N - Z))) : 0;
+    const reg = kw != null && kw < 0 ? Math.max(1, Math.round(Math.min(60, -kw) / 60 * Z)) : 0;
+    for (let i = 0; i < N; i++) {
+      const on = i >= Z ? i < Z + drive : i >= Z - reg && kw != null && kw < 0;
+      segs += `<i class="${on ? "on" : ""}" style="--c:${i >= Z ? colourStops((i - Z + 1) / (N - Z)) : "#2ee86a"}"></i>`;
+    }
+    scale = "<em>150</em><em>100</em><em>50</em><em>0</em><em>regen</em>";
+    read = kw != null ? `${c.n(Math.abs(kw), 1)}<small>kW</small>` : "—";
+  } else {
+    title = "Wh/km";
+    const w = c.nowWh != null ? c.nowWh : c.whk, R = c.rated || 150;
+    const lit = w != null ? Math.max(1, Math.min(N, Math.round(Math.max(0, w) / 300 * N))) : 0;
+    for (let i = 0; i < N; i++) {
+      const v = (i + 0.5) / N * 300;
+      segs += `<i class="${i < lit ? "on" : ""}" style="--c:${v <= R ? "#2ee86a" : v <= R * 1.5 ? "#ffb020" : "#ff3b3b"}"></i>`;
+    }
+    scale = "<em>300</em><em>200</em><em>100</em><em>0</em>";
+    read = w != null ? `${c.n(w)}` : "—";
+  }
+  return `<div class="gl-ladder"><span>${title}</span><div class="gl-led-bar"><div class="gl-led-scale">${scale}</div><div class="gl-led-segs">${segs}</div></div><b>${read}</b></div>`;
+}
+// A column of small bars beside a round gauge: lit in the speed's colours up
+// to the speed, dim spectrum above it (so it is never empty).
+function glRail(spd, side) {
+  const N = 14, lit = spd != null && spd > 0.5 ? Math.max(1, Math.ceil(Math.min(160, spd) / 160 * N)) : 0;
+  return `<span class="gl-spdrail ${side}" aria-hidden="true">${Array.from({ length: N }, (_, k) =>
+    `<i class="${k < lit ? "on" : ""}" style="--c:${glSkinColour((k + 0.5) / N * 160)}"></i>`).join("")}</span>`;
+}
+function glAltPage(skin, c) {
+  const { t, nw, spd, kw, tw, pct, odo, range, rated, lt } = c, n = c.n;
+  const num = spd != null ? String(Math.round(spd)) : "—";
+  const col = spd != null && spd > 0.5 ? glSkinColour(spd) : "#e8fbff";
+  const gear = ["P", "R", "N", "D"].map((g) => `<b class="${nw.shift === g ? "on" : ""}">${g}</b>`).join("");
+  const batt = `<span class="gl-hud-batt ${pct != null && pct < 20 ? "low" : ""}">${pct != null ? n(pct, 0) : "—"}<small>%</small>
+    <em>${range != null ? n(range) + " km" : ""}</em></span>`;
+  const kwShown = kw != null ? n(Math.abs(kw), 1) : "—";
+  const kwMin = -60, kwMax = 150, zero = -kwMin / (kwMax - kwMin) * 100;
+  const kwPos = kw == null ? null : Math.max(0, Math.min(100, (kw - kwMin) / (kwMax - kwMin) * 100));
+  const bar = `<div class="gl-power-track gl-alt-bar">${kwPos == null ? "" : `<i class="gl-power-fill ${kw < 0 ? "regen" : kw > 60 ? "hard" : ""}"
+    style="left:${Math.min(zero, kwPos).toFixed(1)}%;width:${Math.abs(kwPos - zero).toFixed(1)}%"></i>`}<b style="left:${zero.toFixed(1)}%"></b></div>`;
+  const stat = (label, value, tone = "") => `<div class="gl-hud-stat ${tone}"><span>${label}</span><strong>${value}</strong></div>`;
+  const twTone = rated && tw ? (tw > rated ? "warn" : "good") : "";
+  const dist = t ? t.distance_km : lt && lt.distance_km;
+  const mins = t ? t.duration_min : lt && lt.duration_min;
+  const avg = t ? t.avg_speed_kmh : lt && lt.avg_speed_kmh;
+  // Just after leaving, before the first kilometre, the trip has no Wh/km yet: the last trip's stands in.
+  const whk = t ? (tw ?? (lt && lt.wh_per_km)) : lt && lt.wh_per_km;
+  const sub = t ? "this drive" : lt ? "last trip" : "";
+  if (skin === 1) {
+    return `<div class="gl-page gl-alt gl-hud">
+      <div class="gl-hud-top"><span class="gl-hud-gear">${gear}</span>${batt}</div>
+      <div class="gl-hud-speed" style="color:${col}">${num}<small>km/h</small></div>
+      <div class="gl-hud-pw">${bar}<span>${kw != null && kw < 0 ? "regen " : ""}${kwShown} kW</span></div>
+      <div class="gl-hud-row">
+        ${stat("km", dist != null ? n(dist, 1) : "—")}${stat("min", mins != null ? n(mins) : "—")}
+        ${stat("avg km/h", avg != null ? n(avg) : "—")}${stat("Wh/km", whk != null ? n(whk) : "—", t ? twTone : "")}
+      </div></div>`;
+  }
+  if (skin === 2) {
+    const now = c.nowWh;
+    return `<div class="gl-page gl-alt gl-en">
+      <div class="gl-en-top">
+        <div class="gl-en-big ${kw != null && kw < 0 ? "regen" : ""}"><span>${kw != null && kw < 0 ? "Regen" : "Power"}</span>
+          <strong>${kwShown}<small>kW</small></strong></div>
+        <div class="gl-en-big ${now != null && rated && now > rated ? "warn" : "good"}"><span>Wh/km now</span>
+          <strong>${now != null ? n(now) : "—"}</strong></div>
+        <div class="gl-en-big ${twTone}"><span>Wh/km ${t ? "trip" : "last"}</span><strong>${whk != null ? n(whk) : "—"}</strong></div>
+        <div class="gl-en-big"><span>Regen</span><strong>${t && t.regen_kwh != null ? n(t.regen_kwh, 2) : "—"}<small>kWh</small></strong></div>
+      </div>
+      ${bar}
+      <div class="gl-en-trace">${c.trace}</div>
+      <div class="gl-en-bot"><span>Battery <strong>${pct != null ? n(pct, 1) : "—"}%</strong></span>
+        <span>Est. range <strong>${c.rangeHere != null ? n(c.rangeHere) : "—"} km</strong></span>
+        <span>Speed <strong style="color:${col}">${num} km/h</strong></span></div>
+    </div>`;
+  }
+  if (skin === 4) {
+    // Night: nothing but the speed, soft and large, on black.
+    const soft = spd != null && spd > 100 ? col : "#c9d6e6";
+    return `<div class="gl-page gl-alt gl-night">
+      <div class="gl-night-top"><b>${nw.shift || "P"}</b><span>${pct != null ? n(pct, 0) + "%" : ""}</span></div>
+      <div class="gl-night-speed" style="color:${soft}">${num}</div>
+      <div class="gl-night-row"><span>${dist != null ? n(dist, 1) : "—"} km</span><span>${mins != null ? n(mins) : "—"} min</span><span>${whk != null ? n(whk) : "—"} Wh/km</span></div>
+    </div>`;
+  }
+  if (skin === 5) {
+    // Dial: the 3D gauge with a needle, between two digital LED bars: power
+    // on the left and battery on the right, each with a lit readout.
+    const NSEG = 24, ZERO = 7;                  // power: segments below ZERO are regen
+    const stops = [[0, "#22d3ee"], [.35, "#2ee86a"], [.6, "#ffe03a"], [.8, "#ff8a1f"], [1, "#ff3b3b"]];
+    const powerCol = (f) => (stops.find(([x]) => f <= x) || stops[stops.length - 1])[1];
+    const battCol = (pc) => (pc < 20 ? "#ff3b3b" : pc < 35 ? "#ff8a1f" : pc < 55 ? "#ffe03a" : "#2ee86a");
+    const regen = kw != null && kw < 0;
+    const litDrive = kw != null && kw > 0 ? Math.max(1, Math.round(Math.min(150, kw) / 150 * (NSEG - ZERO))) : 0;
+    const litRegen = regen ? Math.max(1, Math.round(Math.min(60, -kw) / 60 * ZERO)) : 0;
+    let pseg = "";
+    for (let i = 0; i < NSEG; i++) {
+      const on = i >= ZERO ? i < ZERO + litDrive : i >= ZERO - litRegen && regen;
+      const col = i >= ZERO ? powerCol((i - ZERO + 1) / (NSEG - ZERO)) : "#2ee86a";
+      pseg += `<i class="${on ? "on" : ""}${i === ZERO ? " zero" : ""}" style="--c:${col}"></i>`;
+    }
+    const litB = pct != null ? Math.round(pct / 100 * NSEG) : 0;
+    let bseg = "";
+    for (let i = 0; i < NSEG; i++) {
+      bseg += `<i class="${i < litB ? "on" : ""}" style="--c:${battCol((i + 0.5) / NSEG * 100)}"></i>`;
+    }
+    const pwTone = kw == null ? "#7e93ab" : regen ? "#2ee86a" : powerCol(Math.min(1, kw / 150));
+    const bTone = pct == null ? "#7e93ab" : battCol(pct);
+    const led = (label, segs, ghost, value, unit, tone, scale) => `<div class="gl-ledcol">
+      <span>${label}</span>
+      <div class="gl-led-bar"><div class="gl-led-segs">${segs}</div><div class="gl-led-scale">${scale}</div></div>
+      <div class="gl-digi" style="--c:${tone}"><i>${ghost}</i><b>${value}</b><small>${unit}</small></div></div>`;
+    return `<div class="gl-page gl-alt gl-dialpage">
+      ${led(regen ? "Regen" : "Power", pseg, "88.8", kwShown, "kW", pwTone, "<em>150</em><em>75</em><em>0</em><em>regen</em>")}
+      <div class="gl-dialbox">${glLadder("speed", c)}${glGauge3D(spd, col, nw, null, true)}${glLadder("whkm", { ...c, whk })}</div>
+      ${led("Battery", bseg, "888", pct != null ? n(pct, 0) : "—", "%", bTone, "<em>100</em><em>75</em><em>50</em><em>25</em><em>0</em>")}
+    </div>`;
+  }
+  if (skin === 6) {
+    // Range: the battery, big, and what it will do.
+    const shown = pct ?? 0;
+    return `<div class="gl-page gl-alt gl-rangepage">
+      <div class="gl-rng-side">
+        <div class="gl-big"><span>Est. range km</span><strong>${c.rangeHere != null ? n(c.rangeHere) : range != null ? n(range) : "—"}</strong></div>
+        <div class="gl-big"><span>Rated range km</span><strong>${range != null ? n(range) : "—"}</strong></div>
+      </div>
+      <div class="gl-rng-mid">${glBatteryShape(shown, shown < 20 ? "#ff6b70" : "var(--green)", pct != null ? n(pct, 0) + "%" : "—", "battery now")}</div>
+      <div class="gl-rng-side">
+        <div class="gl-big"><span>Used ${t ? "this drive" : "last trip"}</span><strong>${c.usedPct != null ? n(c.usedPct, 1) : "—"}<small>%</small></strong></div>
+        <div class="gl-big"><span>Energy kWh</span><strong>${t && t.energy_kwh != null ? n(t.energy_kwh, 2) : lt && lt.energy_kwh != null ? n(lt.energy_kwh, 2) : "—"}</strong></div>
+      </div>
+    </div>`;
+  }
+  if (skin === 10) {
+    // Lines: an outlined speed with streaks either side that lengthen and take
+    // the speed's colour, and a row of figures split by thin rules.
+    const sp = spd != null ? Math.max(0, Math.min(160, spd)) : 0;
+    const lens = [1, .78, .6, .84, .52, .7, .9];
+    const streak = (mirror) => `<span class="gl-ln-st ${mirror ? "r" : "l"}">${lens.map((f, k) =>
+      `<i style="width:${(sp / 160 * 100 * f).toFixed(1)}%;background:linear-gradient(${mirror ? 270 : 90}deg, transparent, ${glSkinColour(Math.max(5, sp * (0.55 + 0.07 * k)))})"></i>`).join("")}</span>`;
+    const cell = (label, value, tone = "") => `<div class="gl-ln-c ${tone}"><span>${label}</span><strong>${value}</strong></div>`;
+    return `<div class="gl-page gl-alt gl-lines">
+      <div class="gl-ln-mid">${streak(false)}<div class="gl-ln-num" style="--c:${col}">${num}<small>km/h · ${nw.shift || "P"}</small></div>${streak(true)}</div>
+      <div class="gl-ln-row">
+        ${cell("km", dist != null ? n(dist, 1) : "—")}${cell("min", mins != null ? n(mins) : "—")}${cell("avg km/h", avg != null ? n(avg) : "—")}
+        ${cell("Wh/km", whk != null ? n(whk) : "—", t ? twTone : "")}${cell(kw != null && kw < 0 ? "regen kW" : "power kW", kwShown)}
+        ${cell("battery %", pct != null ? n(pct, 0) : "—", pct != null && pct < 20 ? "warn" : "good")}
+      </div></div>`;
+  }
+  if (skin === 11) {
+    // Graph: the last three minutes of speed and of power as two lines, the
+    // speed one drawn in the colour of the speed at each moment.
+    const hist = (c.hist || []).filter((x) => x && x.t != null);
+    const W = 300, H = 90;
+    const t1 = hist.length ? hist[hist.length - 1].t : 0, t0 = t1 - 180;
+    const X = (tt) => ((tt - t0) / 180 * W).toFixed(1);
+    let sLine = "", sFill = "";
+    for (let i = 1; i < hist.length; i++) {
+      const a = hist[i - 1], b = hist[i];
+      if (b.t < t0) continue;
+      const ya = (H - 4 - Math.min(160, a.v) / 160 * (H - 8)).toFixed(1), yb = (H - 4 - Math.min(160, b.v) / 160 * (H - 8)).toFixed(1);
+      sLine += `<line x1="${X(Math.max(a.t, t0))}" y1="${ya}" x2="${X(b.t)}" y2="${yb}" stroke="${glSkinColour(b.v)}" stroke-width="2.4" stroke-linecap="round"/>`;
+    }
+    const pk = hist.filter((x) => x.kw != null && x.t >= t0);
+    const kwMax = Math.max(60, ...pk.map((x) => Math.abs(x.kw))), PY = (kv) => (H / 2 - kv / kwMax * (H / 2 - 5)).toFixed(1);
+    let pLine = "";
+    for (let i = 1; i < pk.length; i++) {
+      pLine += `<line x1="${X(pk[i - 1].t)}" y1="${PY(pk[i - 1].kw)}" x2="${X(pk[i].t)}" y2="${PY(pk[i].kw)}" stroke="${pk[i].kw < 0 ? "#2ee86a" : pk[i].kw > 60 ? "#ff8a1f" : "#22d3ee"}" stroke-width="2.2" stroke-linecap="round"/>`;
+    }
+    const grid = (n2) => Array.from({ length: n2 }, (_, k) => `<line x1="0" x2="${W}" y1="${(k + 1) * H / (n2 + 1)}" y2="${(k + 1) * H / (n2 + 1)}" stroke="#1d2a38" stroke-width=".6" stroke-dasharray="3 4"/>`).join("");
+    const chart = (title, big, unit, body, tone) => `<div class="gl-gr-box"><div class="gl-gr-h"><span>${title}</span><strong style="color:${tone}">${big}<small>${unit}</small></strong></div>
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">${grid(3)}${body}</svg></div>`;
+    return `<div class="gl-page gl-alt gl-graph">
+      ${chart("Speed · last 3 min", num, "km/h", sLine || '<text x="150" y="50" text-anchor="middle" font-size="9" fill="#6f7f94">building the line…</text>', col)}
+      ${chart("Power · last 3 min", kwShown, "kW", `<line x1="0" x2="${W}" y1="${H / 2}" y2="${H / 2}" stroke="#cfe8ff" stroke-width=".8" stroke-dasharray="5 4" opacity=".6"/>${pLine}` , kw != null && kw < 0 ? "#2ee86a" : "#22d3ee")}
+      <div class="gl-gr-row">${stat("km", dist != null ? n(dist, 1) : "—")}${stat("min", mins != null ? n(mins) : "—")}${stat("Wh/km", whk != null ? n(whk) : "—", t ? twTone : "")}${stat("battery %", pct != null ? n(pct, 0) : "—", pct != null && pct < 20 ? "warn" : "good")}</div>
+    </div>`;
+  }
+  if (skin === 8) {
+    // Round Mix: a round speed ring with the odometer set into it, the trip
+    // on its left and power and battery on its right.
+    const round = glGauge3D(spd, col, nw, odo, false);
+    return `<div class="gl-page gl-alt gl-rmix">
+      <div class="gl-rmix-col">${stat("km", dist != null ? n(dist, 1) : "—")}${stat("min", mins != null ? n(mins) : "—")}${stat("avg km/h", avg != null ? n(avg) : "—")}</div>
+      <div class="gl-rmix-mid">${glLadder("speed", c)}${round}${glLadder("power", c)}</div>
+      <div class="gl-rmix-col">${stat(kw != null && kw < 0 ? "regen kW" : "power kW", kwShown)}${stat("Wh/km", whk != null ? n(whk) : "—", t ? twTone : "")}
+        ${stat("battery %", pct != null ? n(pct, 0) : "—", pct != null && pct < 20 ? "warn" : "good")}</div>
+    </div>`;
+  }
+  if (skin === 9) {
+    // Stack: three readings on top, the speed, then the trace and the trip.
+    return `<div class="gl-page gl-alt gl-stackpage">
+      <div class="gl-stk-top">${stat(kw != null && kw < 0 ? "regen kW" : "power kW", kwShown)}${stat("Wh/km now", c.nowWh != null ? n(c.nowWh) : "—")}
+        ${stat("battery %", pct != null ? n(pct, 0) : "—", pct != null && pct < 20 ? "warn" : "good")}${stat("range km", range != null ? n(range) : "—")}</div>
+      <div class="gl-hud-speed" style="color:${col}">${num}<small>km/h · ${nw.shift || "P"}</small></div>
+      <div class="gl-stk-bot"><div class="gl-stk-trace">${c.trace}</div>
+        <div class="gl-stk-trip">${stat("km", dist != null ? n(dist, 1) : "—")}${stat("min", mins != null ? n(mins) : "—")}${stat("Wh/km", whk != null ? n(whk) : "—", t ? twTone : "")}</div></div>
+    </div>`;
+  }
+  if (skin === 7) {
+    // Mix: speed, power, the trace and the trip, all at once.
+    return `<div class="gl-page gl-alt gl-mixpage">
+      <div class="gl-mix-speed" style="color:${col}">${num}<small>km/h · ${nw.shift || "P"}</small></div>
+      <div class="gl-mix-pw"><div class="gl-mix-kw ${kw != null && kw < 0 ? "regen" : ""}"><span>${kw != null && kw < 0 ? "Regen" : "Power"}</span><strong>${kwShown}<small>kW</small></strong></div>${bar}
+        <div class="gl-mix-batt"><span>Battery</span><strong>${pct != null ? n(pct, 0) : "—"}%</strong><em>${range != null ? n(range) + " km" : ""}</em></div></div>
+      <div class="gl-mix-trace">${c.trace}</div>
+      <div class="gl-mix-trip">${stat("km", dist != null ? n(dist, 1) : "—")}${stat("min", mins != null ? n(mins) : "—")}${stat("avg", avg != null ? n(avg) : "—")}${stat("Wh/km", whk != null ? n(whk) : "—", t ? twTone : "")}</div>
+    </div>`;
+  }
+  const tile = (label, value, tone = "") => `<div class="gl-big ${tone}"><span>${label}</span><strong>${value}</strong></div>`;
+  return `<div class="gl-page gl-alt gl-bigs">
+    <div class="gl-bigs-h"><span>${t ? "Trip computer" : lt ? "Last trip" : "Trip"}</span><em>${sub}</em></div>
+    <div class="gl-bigs-g">
+      ${tile("km", dist != null ? n(dist, 1) : "—")}${tile("min", mins != null ? n(mins) : "—")}
+      ${tile("avg km/h", avg != null ? n(avg) : "—")}${tile("Wh/km", whk != null ? n(whk) : "—", t ? twTone : "")}
+      ${tile("odometer km", odo != null ? n(odo, 0) : "—")}${tile("battery %", pct != null ? n(pct, 1) : "—", pct != null && pct < 20 ? "warn" : "good")}
+    </div></div>`;
+}
+
 const glPref = (k, fallback) => { try { return localStorage.getItem(k) || fallback; } catch (_) { return fallback; } };
 const glSave = (k, v) => { try { localStorage.setItem(k, v); } catch (_) { /* private mode */ } };
 let glanceTab = glPref("glanceTab", "drive");
+glLiveSkin = GL_SKINS[+glPref("glLiveSkin", "0")] ? +glPref("glLiveSkin", "0") : 0;
 
 function renderGlance(d) {
   const el = document.getElementById("glance");
@@ -5005,7 +5397,8 @@ function renderGlance(d) {
         <button type="button" class="gl-chip gl-dimchip" data-gl-dim>${glDim.off ? "Always Bright" : "Auto Dim"}</button>
         ${nw.out_temp != null ? `<span class="gl-chip gl-opt">${n(nw.out_temp, 0)}°C outside</span>` : ""}
         ${nw.climate_on ? '<span class="gl-chip gl-opt">climate on</span>' : ""}
-        ${t && t.eta ? `<span class="gl-chip gl-opt">ETA ${h(t.eta.place)} ${n(t.eta.eta_min)} min</span>` : ""}`;
+        ${t && t.eta ? `<span class="gl-chip gl-opt">ETA ${h(t.eta.place)} ${n(t.eta.eta_min)} min</span>` : ""}
+        ${glSkinDots()}`;
       const ico = {
         dist: '<path d="M4 18 10 6l4 8 2-4 4 8"/>',
         time: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>',
@@ -5021,6 +5414,21 @@ function renderGlance(d) {
           <i><svg viewBox="0 0 24 24" aria-hidden="true">${ico[k]}</svg></i>
           <span>${h(label)}</span><strong>${value}</strong></div>`;
       const pct = lvl != null ? Math.max(0, Math.min(100, +lvl)) : null;
+      if (glLiveSkin > 0) {
+        const twA = t ? (t.wh_per_km ?? t.driving_wh_per_km) : null;
+        const odoA = nw.odo_km ?? (lastData && lastData.vehicle && lastData.vehicle.current_odo_km);
+        const hist = glLiveState.hist || [];
+        const traceHtml = glEffTrace(hist, rated);
+        return { body: glAltSkin(glLiveSkin, {
+          t, nw, spd, kw: inst && inst.kw != null ? inst.kw : null, tw: twA, pct, odo: odoA, hist,
+          range: nw.range_km ?? null, rated, lt, trace: traceHtml,
+          nowWh: inst && inst.whkm != null ? inst.whkm : null,
+          rangeHere: nw.energy_kwh != null && twA > 0 ? nw.energy_kwh * 1000 / twA : null, n,
+          usedPct: t ? Math.max(+t.soc_used || 0, lastData && lastData.vehicle && lastData.vehicle.usable_capacity_kwh && t.energy_kwh > 0
+            ? t.energy_kwh / lastData.vehicle.usable_capacity_kwh * 100 : 0) : null,
+          packKwh: lastData && lastData.vehicle && lastData.vehicle.usable_capacity_kwh,
+        }), foot };
+      }
       if (!t) {
         // Parked: the car now on the left, the last drive on the right, in the
         // same tiles as the driving view. The odometer comes from the
@@ -5406,6 +5814,7 @@ function glFit(root) {
   // screen and inside any safe-area inset.
   for (const row of root.querySelectorAll(".gl-odo, .gl-trace-h, .gl-battbar-top, .gl-power-top")) glFitRow(row);
   glFootFit(root);
+  glKeyFit(root);
 }
 
 document.addEventListener("click", (e) => {
@@ -5417,6 +5826,8 @@ document.addEventListener("click", (e) => {
     if (glanceTab === "live") glLivePoll(); else glWakeSync();
     return;
   }
+  const skinDot = e.target.closest("[data-gl-skin]");
+  if (skinDot) { glSkinSet(+skinDot.dataset.glSkin); return; }
   if (e.target.closest("[data-gl-dim]")) {
     glDim.off = !glDim.off;
     glDimArm();
@@ -6234,7 +6645,10 @@ if (reportBtn) reportBtn.addEventListener("click", () => {
   let startY = null, armed = false;
   window.addEventListener("touchstart", (e) => {
     const modalOpen = document.querySelector(".modal:not(.hidden)");
-    startY = (!modalOpen && window.scrollY <= 0) ? e.touches[0].clientY : null;
+    // Not on the Glance page: a swipe down there changes the Live design, and
+    // it must not pull the whole app into a reload.
+    const inGlance = e.target.closest && e.target.closest("#glance");
+    startY = (!modalOpen && !inGlance && window.scrollY <= 0) ? e.touches[0].clientY : null;
     armed = false;
   }, { passive: true });
   window.addEventListener("touchmove", (e) => {
@@ -6678,3 +7092,48 @@ showHome();
     if (e.touches && e.touches.length > 1) e.preventDefault();
   }, { passive: false });
 })();
+
+// Swipe across the Live page to change its design: left or right for the
+// single designs, up or down for the combinations. A swipe has to be mostly
+// along one axis and a good length, and not start at a screen edge (where the
+// browser's own back and home gestures live).
+{
+  let sw = null;
+  document.addEventListener("pointerdown", (e) => {
+    const g = e.target.closest && e.target.closest("#glance");
+    const edge = 28;
+    sw = g && glanceTab === "live" && !e.target.closest("button, a, input, select")
+      && e.clientX > edge && e.clientX < innerWidth - edge && e.clientY > edge && e.clientY < innerHeight - edge
+      ? { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId } : null;
+  }, { passive: true });
+  document.addEventListener("pointerup", (e) => {
+    if (!sw || e.pointerId !== sw.id) return;
+    const dx = e.clientX - sw.x, dy = e.clientY - sw.y, dt = Date.now() - sw.t;
+    sw = null;
+    if (dt >= 900) return;
+    if (Math.abs(dx) >= 60 && Math.abs(dx) > Math.abs(dy) * 1.6) glSkinStep("h", dx < 0 ? 1 : -1);
+    else if (Math.abs(dy) >= 50 && Math.abs(dy) > Math.abs(dx) * 1.6) glSkinStep("v", dy < 0 ? 1 : -1);
+  }, { passive: true });
+  document.addEventListener("pointercancel", () => { sw = null; }, { passive: true });
+}
+
+// Touch the Live page and the panels tilt towards your finger, a little, for
+// as long as it is down. The tilt is kept on #glance itself, which the page
+// does not rebuild, so it survives each new reading.
+{
+  const root = () => document.getElementById("glance");
+  const clear = () => { const r = root(); if (r) { r.style.removeProperty("--rx"); r.style.removeProperty("--ry"); } };
+  document.addEventListener("pointermove", (e) => {
+    if (!e.buttons && e.pointerType !== "touch") return;
+    const alt = e.target.closest && e.target.closest(".gl-alt");
+    const r = root();
+    if (!alt || !r || document.body.classList.contains("gl-dim")) return;
+    const b = alt.getBoundingClientRect();
+    const nx = Math.max(-1, Math.min(1, (e.clientX - b.left - b.width / 2) / (b.width / 2)));
+    const ny = Math.max(-1, Math.min(1, (e.clientY - b.top - b.height / 2) / (b.height / 2)));
+    r.style.setProperty("--ry", (nx * 5).toFixed(1) + "deg");
+    r.style.setProperty("--rx", (-ny * 4).toFixed(1) + "deg");
+  }, { passive: true });
+  document.addEventListener("pointerup", clear, { passive: true });
+  document.addEventListener("pointercancel", clear, { passive: true });
+}
