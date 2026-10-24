@@ -5089,12 +5089,12 @@ function glGauge3D(spd, col, nw, odo, needle) {
     // in the speed's colour.
     const frac = spd != null ? Math.min(1, v / MAXV) : 0;
     for (const [mx, my] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
-      for (const [rr, w] of [[103.8, 2.2], [108, 1.2]]) {
-        const A0c = 22, A1c = 68, A = A0c + (A1c - A0c) * frac;
+      for (const [rr, w] of [[102.6, 3.4], [106.6, 1.8]]) {
+        const A0c = 8, A1c = 82, A = A0c + (A1c - A0c) * frac;
         const pt = (deg) => { const t = deg * Math.PI / 180; return [(100 + mx * rr * Math.cos(t)).toFixed(1), (100 + my * rr * Math.sin(t)).toFixed(1)]; };
         const sw = mx * my > 0 ? 1 : 0;
         const [x0, y0] = pt(A0c), [x1, y1] = pt(A1c), [xa, ya] = pt(A);
-        rimFx += `<path d="M${x0} ${y0} A${rr} ${rr} 0 0 ${sw} ${x1} ${y1}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linecap="round" opacity=".16"/>`;
+        rimFx += `<path d="M${x0} ${y0} A${rr} ${rr} 0 0 ${sw} ${x1} ${y1}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linecap="round" opacity=".2"/>`;
         if (frac > 0.01) rimFx += `<path d="M${x0} ${y0} A${rr} ${rr} 0 0 ${sw} ${xa} ${ya}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linecap="round" filter="url(#${uid}-glow)"/>`;
       }
     }
@@ -5125,7 +5125,7 @@ function glGauge3D(spd, col, nw, odo, needle) {
     <line x1="100" y1="100" x2="${nx.toFixed(1)}" y2="${ny.toFixed(1)}" stroke="${col}" stroke-width="1.2" stroke-linecap="round"/>
     <circle cx="100" cy="100" r="9" fill="url(#${uid}-bz)" stroke="#000" stroke-width=".8"/>
     <circle cx="100" cy="100" r="3.2" fill="#0a0f16"/>`;
-  return `<svg viewBox="0 0 200 206" role="img" aria-label="Speed ${num} km/h">
+  return `<svg viewBox="-9 -9 218 224" role="img" aria-label="Speed ${num} km/h">
     <defs>
       <linearGradient id="${uid}-bz" x1="0" y1="0" x2="1" y2="1">
         <stop offset="0" stop-color="#e3eaf4"/><stop offset=".22" stop-color="#7c8898"/><stop offset=".5" stop-color="#1b232f"/>
@@ -5269,6 +5269,16 @@ function glLadder(kind, c) {
     read = w != null ? `${c.n(w)}` : "—";
   }
   return `<div class="gl-ladder"><span>${title}</span>${topRead ? `<b class="gl-ltop" style="color:${topTone}">${topRead}</b>` : ""}<div class="gl-led-bar"><div class="gl-led-scale">${scale}</div><div class="gl-led-segs">${segs}</div></div><b${readTone ? ` style="color:${readTone}"` : ""}>${read}</b>${sub ? `<em class="gl-lsub">${sub}</em>` : ""}</div>`;
+}
+// Under a round gauge: the gear selector and a colour LED speed strip with the
+// drive's top speed marked, filling the space below the dial.
+function glUnder(spd, nw, t, hist) {
+  const N = 40, lit = spd != null && spd > 0.5 ? Math.max(1, Math.ceil(Math.min(160, spd) / 160 * N)) : 0;
+  const top = t && t.max_speed_kmh != null ? Math.max(0, Math.min(N - 1, Math.round(t.max_speed_kmh / 160 * N) - 1)) : -1;
+  let dots = "";
+  for (let i = 0; i < N; i++) dots += `<i class="${i < lit ? "on" : ""}${i === top ? " top" : ""}" style="--c:${glSkinColour((i + 0.5) / N * 160)}"></i>`;
+  const g = ["P", "R", "N", "D"].map((x) => `<b class="${nw.shift === x ? "on" : ""}">${x}</b>`).join("");
+  return `<div class="gl-under"><span class="gl-under-g">${g}</span><div class="gl-under-bar">${dots}</div></div>`;
 }
 // A column of small bars beside a round gauge: lit in the speed's colours up
 // to the speed, dim spectrum above it (so it is never empty).
@@ -5480,7 +5490,7 @@ function glAltPage(skin, c) {
     const round = glGauge3D(spd, col, nw, odo, false);
     return `<div class="gl-page gl-alt gl-rmix">
       <div class="gl-rmix-col">${stat("km", dist != null ? n(dist, 1) : "—")}${stat("min", mins != null ? n(mins) : "—")}${stat("avg km/h", avg != null ? n(avg) : "—")}</div>
-      <div class="gl-rmix-mid">${glLadder("flow", c)}${round}${glLadder("whbat", { ...c, whk })}</div>
+      <div class="gl-rmix-mid">${glLadder("flow", c)}${round}${glLadder("whbat", { ...c, whk })}<span class="gl-gearrow">${["P", "R", "N", "D"].map((x) => `<b class="${nw.shift === x ? "on" : ""}">${x}</b>`).join("")}</span></div>
       <div class="gl-rmix-col">${stat("batt used %", c.usedPct != null ? n(c.usedPct, 1) : "—")}
         ${stat("net used kWh", t && t.energy_kwh != null ? n(t.energy_kwh, 2) : lt && lt.energy_kwh != null ? n(lt.energy_kwh, 2) : "—")}
         ${stat("top km/h", t && t.max_speed_kmh != null ? n(t.max_speed_kmh) : lt && lt.max_speed_kmh != null ? n(lt.max_speed_kmh) : "—")}</div>
