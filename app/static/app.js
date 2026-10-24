@@ -4570,6 +4570,25 @@ function glTrace(hist) {
 // Wh/km over the last three minutes, each point averaged over the 15 s
 // before it (energy over distance, not a one-second ratio), against the rated
 // line: green under it, amber over it.
+// Wh/km as a bar of LED dots: low on the left, high on the right, green up to
+// the rated figure, amber to one and a half times it, red beyond. The lit
+// part is the figure now; a white tick marks the drive's highest.
+function glWhBar(now, rated, max) {
+  const R = rated || 150, N = 36, TOP = R * 2.5;
+  const lit = now != null ? Math.max(0, Math.min(N, Math.round(Math.max(0, now) / TOP * N))) : 0;
+  const mk = max != null ? Math.max(0, Math.min(N - 1, Math.round(max / TOP * N) - 1)) : -1;
+  let dots = "";
+  for (let i = 0; i < N; i++) {
+    const v = (i + 0.5) / N * TOP;
+    const c = v <= R ? "#2ee86a" : v <= R * 1.5 ? "#ffb020" : "#ff3b3b";
+    dots += `<i class="${i < lit ? "on" : ""}${i === mk ? " mk" : ""}" style="--c:${c}"></i>`;
+  }
+  const n0 = (v) => Math.round(v).toLocaleString("en-US");
+  return `<div class="gl-trace"><div class="gl-trace-h"><span>Wh/km<i data-opt="1"> · low to high</i></span>
+    <span>${now != null ? `<strong class="${now > R ? "warn" : "good"}">${n0(now)}</strong><i data-opt="2"> now</i> · ` : ""}<i data-opt="3">rated </i>${n0(R)}</span></div>
+    <div class="gl-whbar">${dots}</div></div>`;
+}
+
 function glEffTrace(hist, rated) {
   const W = 300, H = 92, R = rated || 150;
   const n = (v) => Math.round(v).toLocaleString("en-US");
@@ -4826,6 +4845,14 @@ function glLiveApply(L) {
     glLiveState.saved = Date.now();
     try { localStorage.setItem("glLive", JSON.stringify({ at: Date.now(), L })); } catch (_) { /* private mode */ }
   }
+  // The highest Wh/km of this drive, from moments at 30 km/h or more (below that
+  // a few kW over a crawl reads as thousands).
+  if (L.trip && L.trip.start_time !== glLiveState.maxKey) { glLiveState.maxKey = L.trip.start_time; glLiveState.maxWh = null; }
+  if (!L.trip) { glLiveState.maxKey = null; glLiveState.maxWh = null; }
+  if (nw.power_kw != null && nw.power_kw > 0 && (+nw.speed_kmh || 0) >= 30 && L.trip) {
+    const w = nw.power_kw * 1000 / nw.speed_kmh;
+    if (glLiveState.maxWh == null || w > glLiveState.maxWh) glLiveState.maxWh = w;
+  }
   if (nw.power_kw != null) {
     const kw = nw.power_kw;
     const v = nw.speed_kmh || 0;
@@ -5045,6 +5072,34 @@ function glGauge3D(spd, col, nw, odo, needle) {
     if (on) ringLit += seg;
   }
   const uid = `glr${++glDialSeq}`;
+  // Colour lines on the outer rim: fine radial strokes all round the bezel's
+  // groove, lit in each band's colour up to the speed and faint beyond it, and
+  // a glowing rim line that brightens with speed.
+  let rimFx = "";
+  {
+    const NL = 80;
+    for (let k = 0; k < NL; k++) {
+      const x = (k + 0.5) / NL * MAXV, a = ang(x) * Math.PI / 180, on = spd != null && x <= v;
+      const r0 = on ? 90.2 : 91.6, r1 = 96;
+      rimFx += `<line x1="${(100 + r0 * Math.cos(a)).toFixed(1)}" y1="${(100 + r0 * Math.sin(a)).toFixed(1)}" x2="${(100 + r1 * Math.cos(a)).toFixed(1)}" y2="${(100 + r1 * Math.sin(a)).toFixed(1)}" stroke="${glSkinColour(x)}" stroke-width="${on ? 1.7 : 1.1}" stroke-linecap="round" opacity="${on ? 1 : .22}"/>`;
+    }
+    const glowA = spd != null && spd > 0.5 ? Math.min(1, .35 + v / MAXV * .65) : .25;
+    // Four corner curves hugging the bezel, a double line in each corner. They
+    // lengthen from the sides toward the top and bottom as the speed rises,
+    // in the speed's colour.
+    const frac = spd != null ? Math.min(1, v / MAXV) : 0;
+    for (const [mx, my] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+      for (const [rr, w] of [[103.8, 2.2], [108, 1.2]]) {
+        const A0c = 22, A1c = 68, A = A0c + (A1c - A0c) * frac;
+        const pt = (deg) => { const t = deg * Math.PI / 180; return [(100 + mx * rr * Math.cos(t)).toFixed(1), (100 + my * rr * Math.sin(t)).toFixed(1)]; };
+        const sw = mx * my > 0 ? 1 : 0;
+        const [x0, y0] = pt(A0c), [x1, y1] = pt(A1c), [xa, ya] = pt(A);
+        rimFx += `<path d="M${x0} ${y0} A${rr} ${rr} 0 0 ${sw} ${x1} ${y1}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linecap="round" opacity=".16"/>`;
+        if (frac > 0.01) rimFx += `<path d="M${x0} ${y0} A${rr} ${rr} 0 0 ${sw} ${xa} ${ya}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linecap="round" filter="url(#${uid}-glow)"/>`;
+      }
+    }
+    rimFx = `<circle cx="100" cy="100" r="98" fill="none" stroke="${col}" stroke-width="1.4" opacity="${glowA.toFixed(2)}" filter="url(#${uid}-glow)"/>` + rimFx;
+  }
   const odoDigits = odo != null ? String(Math.round(odo)).split("") : [];
   // A mechanical odometer: one cylinder cell per digit, dark at the top and
   // bottom edge and lit in the middle.
@@ -5096,6 +5151,7 @@ function glGauge3D(spd, col, nw, odo, needle) {
     <circle cx="100" cy="100" r="92" fill="none" stroke="#fff" stroke-opacity=".07" stroke-width="1"/>
     <g opacity=".9">${ring}</g>
     <g filter="url(#${uid}-glow)" style="mix-blend-mode:screen">${ringLit}</g>
+    ${rimFx}
     ${tip}
     <circle cx="100" cy="100" r="74" fill="url(#${uid}-gr)"/>
     <circle cx="100" cy="100" r="72.5" fill="url(#${uid}-dm)" stroke="#000" stroke-width="1"/>
@@ -5594,6 +5650,8 @@ function renderGlance(d) {
         ? t.regen_kwh / (t.energy_kwh + t.regen_kwh) * 100 : null;
       const kwMin = -60, kwMax = 150, zero = -kwMin / (kwMax - kwMin) * 100;
       const kwPos = kw == null ? null : Math.max(0, Math.min(100, (kw - kwMin) / (kwMax - kwMin) * 100));
+      const packKwh0 = lastData && lastData.vehicle && lastData.vehicle.usable_capacity_kwh;
+      const usedPct0 = Math.max(+t.soc_used || 0, packKwh0 && t.energy_kwh > 0 ? t.energy_kwh / packKwh0 * 100 : 0);
       const powerBar = `<div class="gl-power">
           <div class="gl-power-top"><span>${kw != null && kw < 0 ? "Regen" : "Power"}</span>
             <strong class="${kw != null && kw < 0 ? "regen" : ""}">${kw == null ? "—" : n(Math.abs(kw), 1)}<small>kW</small></strong></div>
@@ -5603,12 +5661,12 @@ function renderGlance(d) {
             <b style="left:${zero.toFixed(1)}%"></b></div>
           <div class="gl-power-scale"><span>regen</span><span>0</span><span>${kwMax} kW</span></div>
           <div class="gl-minis">
-            <div class="gl-mini"><span data-short="Range">Est. range</span>
-              <div><strong>${rangeHere != null ? n(rangeHere) : "—"}<small>km</small></strong>
-              <em>${nw.range_km != null ? `rated ${n(nw.range_km)}` : ""}</em></div></div>
-            <div class="gl-mini regen"><span>Regen</span>
-              <div><strong>${t.regen_kwh != null ? n(t.regen_kwh, 2) : "—"}<small>kWh</small></strong>
-              <em>${regenPct != null ? `${n(regenPct)}%` : ""}</em></div></div>
+            <div class="gl-mini"><span data-short="Batt">Batt used</span>
+              <div><strong>${n(usedPct0, 1)}<small>%</small></strong>
+              <em>${t.regen_kwh != null ? `regen ${n(t.regen_kwh, 2)}` : ""}</em></div></div>
+            <div class="gl-mini regen"><span data-short="Net use">Net use</span>
+              <div><strong>${t.energy_kwh != null ? n(t.energy_kwh, 2) : "—"}<small>kWh</small></strong>
+              <em>${regenPct != null ? `${n(regenPct)}% back` : ""}</em></div></div>
           </div>
         </div>`;
       // The car's battery % moves in whole steps, which barely register on a short
@@ -5628,14 +5686,14 @@ function renderGlance(d) {
             ${tile("dist", "km", n(t.distance_km, 1))}
             ${tile("time", "min", n(t.duration_min))}
             ${tile("speed", "Avg km/h", n(t.avg_speed_kmh))}
-            ${tile("whkm", "Wh/km", n(tw), twTone)}
+            ${tile("speed", "Max km/h", t.max_speed_kmh != null ? n(t.max_speed_kmh) : "—", "")}
           </div>
           <div class="gl-odo"><span>Odo km</span>
             <strong>${odoNow != null ? n(odoNow, 1) : "—"}</strong></div>
         </div>`,
         glSpeedo({ value: spd, max: 160, mark: t.max_speed_kmh, gear: nw.shift, acc: glLiveState.acc, label: "Speed" }),
         `${powerBar}
-         ${glEffTrace(glLiveState.hist, rated)}
+         ${glWhBar(inst && inst.whkm != null ? inst.whkm : null, rated, glLiveState.maxWh)}
          ${battBar}`,
         foot);
     },
