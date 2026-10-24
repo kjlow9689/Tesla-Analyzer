@@ -5114,19 +5114,82 @@ function glGauge3D(spd, col, nw, odo, needle) {
 }
 
 // c: { t, nw, spd, kw, tw, pct, odo, range, rated, lt, hist, regen, usedPct, h, n }
+// A small line icon for a tile, picked from its label.
+const GL_ICONS = {
+  dist: '<path d="M4 18 10 6l4 8 2-4 4 8"/>',
+  time: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>',
+  speed: '<path d="M4 15a8 8 0 1 1 16 0"/><path d="m12 15 4-5"/>',
+  whkm: '<path d="M13 3 5 13h6l-1 8 8-10h-6l1-8Z"/>',
+  power: '<path d="M13 3 5 13h6l-1 8 8-10h-6l1-8Z"/>',
+  regen: '<path d="M4 12a8 8 0 0 1 14-5l2 2M20 12a8 8 0 0 1-14 5l-2-2"/><path d="M20 4v5h-5M4 20v-5h5"/>',
+  batt: '<rect x="3" y="7" width="16" height="10" rx="2.5"/><path d="M22 11v2M7 10v4M11 10v4"/>',
+  range: '<path d="M12 21s-6-5.6-6-11a6 6 0 0 1 12 0c0 5.4-6 11-6 11Z"/><circle cx="12" cy="10" r="2.2"/>',
+};
+function glIcon(label) {
+  const l = String(label).toLowerCase();
+  const k = l.includes("top") ? "speed" : l.includes("regen") ? "regen" : l.includes("power") ? "power" : l.includes("wh") ? "whkm" : l.includes("batt") ? "batt"
+    : l.includes("range") ? "range" : l.includes("avg") ? "speed" : l.includes("min") ? "time" : l.includes("km") ? "dist" : "";
+  return k ? `<svg class="gl-ic" viewBox="0 0 24 24" aria-hidden="true">${GL_ICONS[k]}</svg>` : "";
+}
 // A tall LED ladder for the space beside a round gauge: "speed" lit in the
 // speed colours, "power" (regen below its zero mark) or "whkm" (green under
 // rated, amber over). Segments are always drawn; the lit ones glow.
 function glLadder(kind, c) {
   const N = 22;
   const colourStops = (f) => [[0, "#22d3ee"], [.35, "#2ee86a"], [.6, "#ffe03a"], [.8, "#ff8a1f"], [1, "#ff3b3b"]].find(([x]) => f <= x)?.[1] || "#ff3b3b";
-  let segs = "", title = "", scale = "", read = "";
+  let segs = "", title = "", scale = "", read = "", sub = "", topRead = "", topTone = "", readTone = "";
   if (kind === "speed") {
     title = "Speed";
     const lit = c.spd != null && c.spd > 0.5 ? Math.max(1, Math.ceil(Math.min(160, c.spd) / 160 * N)) : 0;
     for (let i = 0; i < N; i++) segs += `<i class="${i < lit ? "on" : ""}" style="--c:${glSkinColour((i + 0.5) / N * 160)}"></i>`;
     scale = "<em>160</em><em>120</em><em>80</em><em>40</em><em>0</em>";
     read = c.spd != null ? `${Math.round(c.spd)}<small>km/h</small>` : "—";
+  } else if (kind === "whbat") {
+    // Half and half: Wh/km fills upward in the top half (green under rated,
+    // amber, red); the battery fills DOWNWARD from the middle line: red near
+    // the line when low, green at the far end when full.
+    const H = 12, R = c.rated || 150, w = c.nowWh != null ? c.nowWh : c.whk, pc = c.pct;
+    title = "Wh/km";
+    const up = w != null ? Math.max(1, Math.min(H, Math.round(Math.max(0, w) / 300 * H))) : 0;
+    const bt = pc != null ? Math.max(0, Math.min(H, Math.round(pc / 100 * H))) : 0;
+    const wCol = (k) => { const v = (k + 0.5) / H * 300; return v <= R ? "#2ee86a" : v <= R * 1.5 ? "#ffb020" : "#ff3b3b"; };
+    const bCol = (k) => { const v = (k + 0.5) / H * 100; return v < 20 ? "#ff3b3b" : v < 35 ? "#ff8a1f" : v < 55 ? "#ffe03a" : "#2ee86a"; };
+    for (let k = 0; k < H; k++) segs += `<i class="${H - 1 - k < bt ? "on" : ""}" style="--c:${bCol(H - 1 - k)}"></i>`;
+    segs += '<i class="mid"></i>';
+    for (let k = 0; k < H; k++) segs += `<i class="${k < up ? "on" : ""}" style="--c:${wCol(k)}"></i>`;
+    scale = "<em>300</em><em>150</em><em>0|0%</em><em>50%</em><em>100%</em>";
+    topRead = w != null ? `${c.n(w)}<small>Wh/km</small>` : "—";
+    topTone = w == null ? "#7e93ab" : w <= R ? "#2ee86a" : w <= R * 1.5 ? "#ffb020" : "#ff3b3b";
+    read = pc != null ? `${c.n(pc, 0)}<small>%</small>` : "—";
+    readTone = pc == null ? "#7e93ab" : bCol(Math.round(pc / 100 * H - 0.5));
+    sub = "battery";
+  } else if (kind === "flow") {
+    // Half and half: power going out fills upward from the middle line, regen
+    // coming back fills downward from it. Unlit segments keep their colour, dim.
+    const H = 12, kw = c.kw;
+    title = kw != null && kw < 0 ? "Regen" : "Power";
+    const up = kw != null && kw > 0 ? Math.max(1, Math.round(Math.min(150, kw) / 150 * H)) : 0;
+    const dn = kw != null && kw < 0 ? Math.max(1, Math.round(Math.min(60, -kw) / 60 * H)) : 0;
+    const upCol = (k) => ["#22d3ee", "#19e3c0", "#2ee86a", "#7be84a", "#c8e83a", "#ffe03a", "#ffc02a", "#ff9a1f", "#ff7a1f", "#ff5a2a", "#ff3b3b", "#ff2d72"][k];
+    const dnCol = (k) => ["#2ee86a", "#27e07f", "#20d994", "#19d3a8", "#19d0c0", "#19c9d8", "#22bbee", "#2fa8f5", "#3d95fa", "#4a82ff", "#5b6dff", "#6b5bff"][k];
+    // The column is laid out bottom-up, so regen's far end comes first.
+    for (let k = H - 1; k >= 0; k--) segs += `<i class="${k < dn ? "on" : ""}" style="--c:${dnCol(k)}"></i>`;
+    segs += '<i class="mid"></i>';
+    for (let k = 0; k < H; k++) segs += `<i class="${k < up ? "on" : ""}" style="--c:${upCol(k)}"></i>`;
+    scale = "<em>150</em><em>75</em><em>0</em><em>30</em><em>60</em>";
+    read = kw != null ? `${c.n(Math.abs(kw), 1)}<small>kW</small>` : "—";
+    sub = c.regenKwh != null ? `${c.n(c.regenKwh, 2)} kWh back` : "";
+  } else if (kind === "regen") {
+    title = "Regen";
+    const kw = c.kw, back = kw != null && kw < 0 ? -kw : 0;
+    const lit = back > 0.05 ? Math.max(1, Math.min(N, Math.round(Math.min(60, back) / 60 * N))) : 0;
+    for (let i = 0; i < N; i++) {
+      const f = (i + 0.5) / N;
+      segs += `<i class="${i < lit ? "on" : ""}" style="--c:${f < .4 ? "#2ee86a" : f < .75 ? "#19e3a8" : "#22d3ee"}"></i>`;
+    }
+    scale = "<em>60</em><em>45</em><em>30</em><em>15</em><em>0</em>";
+    read = `${c.n(back, 1)}<small>kW</small>`;
+    sub = c.regenKwh != null ? `${c.n(c.regenKwh, 2)} kWh back` : "";
   } else if (kind === "power") {
     title = c.kw != null && c.kw < 0 ? "Regen" : "Power";
     const Z = 6, kw = c.kw;
@@ -5149,7 +5212,7 @@ function glLadder(kind, c) {
     scale = "<em>300</em><em>200</em><em>100</em><em>0</em>";
     read = w != null ? `${c.n(w)}` : "—";
   }
-  return `<div class="gl-ladder"><span>${title}</span><div class="gl-led-bar"><div class="gl-led-scale">${scale}</div><div class="gl-led-segs">${segs}</div></div><b>${read}</b></div>`;
+  return `<div class="gl-ladder"><span>${title}</span>${topRead ? `<b class="gl-ltop" style="color:${topTone}">${topRead}</b>` : ""}<div class="gl-led-bar"><div class="gl-led-scale">${scale}</div><div class="gl-led-segs">${segs}</div></div><b${readTone ? ` style="color:${readTone}"` : ""}>${read}</b>${sub ? `<em class="gl-lsub">${sub}</em>` : ""}</div>`;
 }
 // A column of small bars beside a round gauge: lit in the speed's colours up
 // to the speed, dim spectrum above it (so it is never empty).
@@ -5170,7 +5233,7 @@ function glAltPage(skin, c) {
   const kwPos = kw == null ? null : Math.max(0, Math.min(100, (kw - kwMin) / (kwMax - kwMin) * 100));
   const bar = `<div class="gl-power-track gl-alt-bar">${kwPos == null ? "" : `<i class="gl-power-fill ${kw < 0 ? "regen" : kw > 60 ? "hard" : ""}"
     style="left:${Math.min(zero, kwPos).toFixed(1)}%;width:${Math.abs(kwPos - zero).toFixed(1)}%"></i>`}<b style="left:${zero.toFixed(1)}%"></b></div>`;
-  const stat = (label, value, tone = "") => `<div class="gl-hud-stat ${tone}"><span>${label}</span><strong>${value}</strong></div>`;
+  const stat = (label, value, tone = "") => `<div class="gl-hud-stat ${tone}${/wh/i.test(label) ? " gl-whkm" : ""}"><span>${glIcon(label)}${label}</span><strong>${value}</strong></div>`;
   const twTone = rated && tw ? (tw > rated ? "warn" : "good") : "";
   const dist = t ? t.distance_km : lt && lt.distance_km;
   const mins = t ? t.duration_min : lt && lt.duration_min;
@@ -5244,7 +5307,7 @@ function glAltPage(skin, c) {
       <div class="gl-digi" style="--c:${tone}"><i>${ghost}</i><b>${value}</b><small>${unit}</small></div></div>`;
     return `<div class="gl-page gl-alt gl-dialpage">
       ${led(regen ? "Regen" : "Power", pseg, "88.8", kwShown, "kW", pwTone, "<em>150</em><em>75</em><em>0</em><em>regen</em>")}
-      <div class="gl-dialbox">${glLadder("speed", c)}${glGauge3D(spd, col, nw, null, true)}${glLadder("whkm", { ...c, whk })}</div>
+      <div class="gl-dialbox">${glLadder("regen", c)}${glGauge3D(spd, col, nw, null, true)}${glLadder("whkm", { ...c, whk })}</div>
       ${led("Battery", bseg, "888", pct != null ? n(pct, 0) : "—", "%", bTone, "<em>100</em><em>75</em><em>50</em><em>25</em><em>0</em>")}
     </div>`;
   }
@@ -5253,13 +5316,13 @@ function glAltPage(skin, c) {
     const shown = pct ?? 0;
     return `<div class="gl-page gl-alt gl-rangepage">
       <div class="gl-rng-side">
-        <div class="gl-big"><span>Est. range km</span><strong>${c.rangeHere != null ? n(c.rangeHere) : range != null ? n(range) : "—"}</strong></div>
-        <div class="gl-big"><span>Rated range km</span><strong>${range != null ? n(range) : "—"}</strong></div>
+        <div class="gl-big"><span>${glIcon("range")}Est. range km</span><strong>${c.rangeHere != null ? n(c.rangeHere) : range != null ? n(range) : "—"}</strong></div>
+        <div class="gl-big"><span>${glIcon("range")}Rated range km</span><strong>${range != null ? n(range) : "—"}</strong></div>
       </div>
       <div class="gl-rng-mid">${glBatteryShape(shown, shown < 20 ? "#ff6b70" : "var(--green)", pct != null ? n(pct, 0) + "%" : "—", "battery now")}</div>
       <div class="gl-rng-side">
-        <div class="gl-big"><span>Used ${t ? "this drive" : "last trip"}</span><strong>${c.usedPct != null ? n(c.usedPct, 1) : "—"}<small>%</small></strong></div>
-        <div class="gl-big"><span>Energy kWh</span><strong>${t && t.energy_kwh != null ? n(t.energy_kwh, 2) : lt && lt.energy_kwh != null ? n(lt.energy_kwh, 2) : "—"}</strong></div>
+        <div class="gl-big"><span>${glIcon("batt")}Used ${t ? "this drive" : "last trip"}</span><strong>${c.usedPct != null ? n(c.usedPct, 1) : "—"}<small>%</small></strong></div>
+        <div class="gl-big"><span>${glIcon("power")}Net used kWh</span><strong>${t && t.energy_kwh != null ? n(t.energy_kwh, 2) : lt && lt.energy_kwh != null ? n(lt.energy_kwh, 2) : "—"}</strong></div>
       </div>
     </div>`;
   }
@@ -5291,7 +5354,7 @@ function glAltPage(skin, c) {
     }
     const tone = kw == null ? "#7e93ab" : kw < 0 ? "#2ee86a" : colAt(Math.min(1, kw / 150));
     return `<div class="gl-page gl-alt gl-power1">
-      <div class="gl-p1-top"><span>${kw != null && kw < 0 ? "Regen · energy coming back" : "Power · energy going out"}</span></div>
+      <div class="gl-p1-top"><span>${glIcon(kw != null && kw < 0 ? "regen" : "power")}${kw != null && kw < 0 ? "Regen · energy coming back" : "Power · energy going out"}</span></div>
       <div class="gl-p1-num" style="--c:${tone}">${kwShown}<small>kW</small></div>
       <div class="gl-p1-bar"><div class="gl-p1-segs">${segs}</div>
         <div class="gl-p1-scale"><em>regen 60</em><em>0</em><em>50</em><em>100</em><em>150 kW</em></div></div>
@@ -5304,7 +5367,7 @@ function glAltPage(skin, c) {
     const tone = shown == null ? "#7e93ab" : shown <= R ? "#2ee86a" : shown <= R * 1.5 ? "#ffb020" : "#ff3b3b";
     const pos = (x) => Math.max(0, Math.min(100, x / (R * 2.5) * 100)).toFixed(1);
     return `<div class="gl-page gl-alt gl-eff1">
-      <div class="gl-p1-top"><span>${now != null ? "Wh/km right now" : "Wh/km this trip"}</span></div>
+      <div class="gl-p1-top"><span>${glIcon("wh")}${now != null ? "Wh/km right now" : "Wh/km this trip"}</span></div>
       <div class="gl-p1-num" style="--c:${tone}">${shown != null ? n(shown) : "—"}<small>Wh/km</small></div>
       <div class="gl-ef-bar"><i class="fill" style="width:${shown != null ? pos(shown) : 0}%;background:${tone}"></i><b style="left:${pos(R)}%"><em>rated ${n(R)}</em></b></div>
       <div class="gl-ef-note" style="color:${tone}">${pctVs == null ? "" : pctVs <= 0 ? `${n(Math.abs(pctVs))}% better than rated` : `${n(pctVs)}% worse than rated`}</div>
@@ -5361,9 +5424,10 @@ function glAltPage(skin, c) {
     const round = glGauge3D(spd, col, nw, odo, false);
     return `<div class="gl-page gl-alt gl-rmix">
       <div class="gl-rmix-col">${stat("km", dist != null ? n(dist, 1) : "—")}${stat("min", mins != null ? n(mins) : "—")}${stat("avg km/h", avg != null ? n(avg) : "—")}</div>
-      <div class="gl-rmix-mid">${glLadder("speed", c)}${round}${glLadder("power", c)}</div>
-      <div class="gl-rmix-col">${stat(kw != null && kw < 0 ? "regen kW" : "power kW", kwShown)}${stat("Wh/km", whk != null ? n(whk) : "—", t ? twTone : "")}
-        ${stat("battery %", pct != null ? n(pct, 0) : "—", pct != null && pct < 20 ? "warn" : "good")}</div>
+      <div class="gl-rmix-mid">${glLadder("flow", c)}${round}${glLadder("whbat", { ...c, whk })}</div>
+      <div class="gl-rmix-col">${stat("batt used %", c.usedPct != null ? n(c.usedPct, 1) : "—")}
+        ${stat("net used kWh", t && t.energy_kwh != null ? n(t.energy_kwh, 2) : lt && lt.energy_kwh != null ? n(lt.energy_kwh, 2) : "—")}
+        ${stat("top km/h", t && t.max_speed_kmh != null ? n(t.max_speed_kmh) : lt && lt.max_speed_kmh != null ? n(lt.max_speed_kmh) : "—")}</div>
     </div>`;
   }
   if (skin === 9) {
@@ -5386,13 +5450,13 @@ function glAltPage(skin, c) {
       <div class="gl-mix-trip">${stat("km", dist != null ? n(dist, 1) : "—")}${stat("min", mins != null ? n(mins) : "—")}${stat("avg", avg != null ? n(avg) : "—")}${stat("Wh/km", whk != null ? n(whk) : "—", t ? twTone : "")}</div>
     </div>`;
   }
-  const tile = (label, value, tone = "") => `<div class="gl-big ${tone}"><span>${label}</span><strong>${value}</strong></div>`;
+  const tile = (label, value, tone = "") => `<div class="gl-big ${tone}"><span>${glIcon(label)}${label}</span><strong>${value}</strong></div>`;
   return `<div class="gl-page gl-alt gl-bigs">
     <div class="gl-bigs-h"><span>${t ? "Trip computer" : lt ? "Last trip" : "Trip"}</span><em>${sub}</em></div>
     <div class="gl-bigs-g">
       ${tile("km", dist != null ? n(dist, 1) : "—")}${tile("min", mins != null ? n(mins) : "—")}
       ${tile("avg km/h", avg != null ? n(avg) : "—")}${tile("Wh/km", whk != null ? n(whk) : "—", t ? twTone : "")}
-      ${tile("energy kWh", t && t.energy_kwh != null ? n(t.energy_kwh, 2) : lt && lt.energy_kwh != null ? n(lt.energy_kwh, 2) : "—")}${tile("battery %", pct != null ? n(pct, 1) : "—", pct != null && pct < 20 ? "warn" : "good")}
+      ${tile("net used kWh", t && t.energy_kwh != null ? n(t.energy_kwh, 2) : lt && lt.energy_kwh != null ? n(lt.energy_kwh, 2) : "—")}${tile("battery %", pct != null ? n(pct, 1) : "—", pct != null && pct < 20 ? "warn" : "good")}
     </div></div>`;
 }
 
@@ -5473,7 +5537,7 @@ function renderGlance(d) {
         const hist = glLiveState.hist || [];
         const traceHtml = glEffTrace(hist, rated);
         return { body: glAltSkin(glLiveSkin, {
-          t, nw, spd, kw: inst && inst.kw != null ? inst.kw : null, tw: twA, pct, odo: odoA, hist,
+          t, nw, spd, kw: inst && inst.kw != null ? inst.kw : null, tw: twA, pct, odo: odoA, hist, regenKwh: t && t.regen_kwh != null ? t.regen_kwh : null,
           range: nw.range_km ?? null, rated, lt, trace: traceHtml,
           nowWh: inst && inst.whkm != null ? inst.whkm : null,
           rangeHere: nw.energy_kwh != null && twA > 0 ? nw.energy_kwh * 1000 / twA : null, n,
