@@ -5046,6 +5046,27 @@ function glAltSkin(skin, c) {
   const spCol = glSkinColour(sp);
   return `<div class="gl-page gl-altwrap" style="--spd:${spCol};--spdp:${Math.min(100, sp / 160 * 100).toFixed(1)}">${glKeyBar(c)}${glAltPage(skin, c)}</div>`;
 }
+// P R N D under the round gauge: moved so its centre line is the footer dots' centre line, whatever the phone.
+// The footer row (live status, Auto Dim, dots) centred in the gap between the page above it and the
+// frame's bottom strip, measured on each phone.
+function glFootCentre(root) {
+  const r = root || document, f = r.querySelector(".glance .gl-foot"), body = r.querySelector(".glance .gl-body"), strip = r.querySelector(".glance .gl-frame .strip.bot");
+  if (!f || !body || !strip) return;
+  f.style.transform = "";
+  const fb = f.getBoundingClientRect(), bb = body.getBoundingClientRect(), sb = strip.getBoundingClientRect();
+  const want = bb.bottom + ((sb.top - bb.bottom) - fb.height) / 2, dy = want - fb.top;
+  if (dy > 0.5 && dy < 14) f.style.transform = `translateY(${dy.toFixed(1)}px)`;
+}
+function glGearAlign(root) {
+  const g = (root || document).querySelector(".glance .gl-gearrow"), d = (root || document).querySelector(".glance .gl-dots button");
+  if (!g || !d) return;
+  g.style.transform = "translateX(-50%)";
+  const b = g.querySelector("b");
+  if (!b) return;
+  const gb = b.getBoundingClientRect(), db = d.getBoundingClientRect();
+  const dy = (db.top + db.height / 2) - (gb.top + gb.height / 2);
+  if (Math.abs(dy) > 0.2 && Math.abs(dy) < 40) g.style.transform = `translateX(-50%) translateY(${dy.toFixed(1)}px)`;
+}
 function glKeyFit(root) {
   const f = (root || document).querySelector(".glance .gl-keybar");
   if (!f) return;
@@ -6000,6 +6021,8 @@ function glFit(root) {
   for (const row of root.querySelectorAll(".gl-odo, .gl-trace-h, .gl-battbar-top, .gl-power-top")) glFitRow(row);
   glFootFit(root);
   glKeyFit(root);
+  glFootCentre(root);
+  glGearAlign(root);
 }
 
 document.addEventListener("click", (e) => {
