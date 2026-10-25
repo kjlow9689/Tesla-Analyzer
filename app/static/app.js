@@ -466,7 +466,7 @@ function carCard(car) {
   main.className = "car-card-main";
   const name = document.createElement("span");
   name.className = "car-card-name";
-  name.textContent = car.name || "My Tesla";
+  name.textContent = car.name || "My EV";
   const sub = document.createElement("span");
   sub.className = "car-card-sub";
   const realVin = car.vin && !/^(DEMO|IMPORT|LINKED)/.test(car.vin);
@@ -3989,7 +3989,7 @@ async function load() {
     const now = new Date();
     const windowText = d.window_label || `${d.window_days}-day window`;
     document.getElementById("footer-meta").textContent =
-      `Generated ${footerDateFmt.format(now)} ${hhmm(now)} MYT · ${windowText} · Tesla Analyzer v0.1`;
+      `Generated ${footerDateFmt.format(now)} ${hhmm(now)} MYT · ${windowText} · EV Analyzer v0.1`;
   } catch (e) {
     document.getElementById("kpis").innerHTML =
       `<div class="loading">Could not load data: ${e.message}</div>`;
@@ -5240,7 +5240,7 @@ function glLadder(kind, c) {
     // The trip's Wh/km, as the digital tiles and the car's own trip card show
     // it, so it moves at the car's pace rather than with every throttle change.
     const H = 12, R = c.rated || 150, w = c.whk != null ? c.whk : c.nowWh, pc = c.pct;
-    title = "Wh/km";
+    title = "Efficiency";   // the figure under it already carries "Wh/km"
     const up = w != null ? Math.max(1, Math.min(H, Math.round(Math.max(0, w) / 300 * H))) : 0;
     const bt = pc != null ? Math.max(0, Math.min(H, Math.round(pc / 100 * H))) : 0;
     const wCol = (k) => { const v = (k + 0.5) / H * 300; return v <= R ? "#2ee86a" : v <= R * 1.5 ? "#ffb020" : "#ff3b3b"; };
@@ -5253,12 +5253,12 @@ function glLadder(kind, c) {
     topTone = w == null ? "#7e93ab" : w <= R ? "#2ee86a" : w <= R * 1.5 ? "#ffb020" : "#ff3b3b";
     read = pc != null ? `${c.n(pc, 0)}<small>%</small>` : "—";
     readTone = pc == null ? "#7e93ab" : bCol(Math.round(pc / 100 * H - 0.5));
-    sub = "battery";
+    sub = "Battery";
   } else if (kind === "flow") {
     // Half and half: power going out fills upward from the middle line, regen
     // coming back fills downward from it. Unlit segments keep their colour, dim.
     const H = 12, kw = c.kw;
-    title = kw != null && kw < 0 ? "Regen" : "Power";
+    title = "Power";   // the kW turns green while braking; Regen has its own label below
     const up = kw != null && kw > 0 ? Math.max(1, Math.round(Math.min(150, kw) / 150 * H)) : 0;
     const dn = kw != null && kw < 0 ? Math.max(1, Math.round(Math.min(60, -kw) / 60 * H)) : 0;
     const upCol = (k) => ["#22d3ee", "#19e3c0", "#2ee86a", "#7be84a", "#c8e83a", "#ffe03a", "#ffc02a", "#ff9a1f", "#ff7a1f", "#ff5a2a", "#ff3b3b", "#ff2d72"][k];
@@ -5268,8 +5268,13 @@ function glLadder(kind, c) {
     segs += '<i class="mid"></i>';
     for (let k = 0; k < H; k++) segs += `<i class="${k < up ? "on" : ""}" style="--c:${upCol(k)}"></i>`;
     scale = "<em>150</em><em>75</em><em>0</em><em>30</em><em>60</em>";
-    read = kw != null ? `${c.n(Math.abs(kw), 1)}<small>kW</small>` : "—";
-    sub = c.regenKwh != null ? `${c.n(c.regenKwh, 2)} kWh back` : "";
+    // Like the Wh/km bar opposite: power now on top (green while braking puts
+    // energy back), and the energy won back by regen this drive below.
+    topRead = kw != null ? `${c.n(Math.abs(kw), 1)}<small>kW</small>` : "—";
+    topTone = kw == null ? "#7e93ab" : kw < 0 ? "#2ee86a" : "#e8fbff";
+    read = c.regenKwh != null ? `${c.n(c.regenKwh, 2)}<small>kWh</small>` : "—";
+    readTone = "#2ee86a";
+    sub = "Regen";
   } else if (kind === "regen") {
     title = "Regen";
     const kw = c.kw, back = kw != null && kw < 0 ? -kw : 0;
@@ -5303,7 +5308,7 @@ function glLadder(kind, c) {
     scale = "<em>300</em><em>200</em><em>100</em><em>0</em>";
     read = w != null ? `${c.n(w)}` : "—";
   }
-  return `<div class="gl-ladder"><span>${title}</span>${topRead ? `<b class="gl-ltop" style="color:${topTone}">${topRead}</b>` : ""}<div class="gl-led-bar"><div class="gl-led-scale">${scale}</div><div class="gl-led-segs">${segs}</div></div><b${readTone ? ` style="color:${readTone}"` : ""}>${read}</b>${sub ? `<em class="gl-lsub">${sub}</em>` : ""}</div>`;
+  return `<div class="gl-ladder gl-lad-${kind}"><span>${title}</span>${topRead ? `<b class="gl-ltop" style="color:${topTone}">${topRead}</b>` : ""}<div class="gl-led-bar"><div class="gl-led-scale">${scale}</div><div class="gl-led-segs">${segs}</div></div><b${readTone ? ` style="color:${readTone}"` : ""}>${read}</b>${sub ? `<em class="gl-lsub">${sub}</em>` : ""}</div>`;
 }
 // Under a round gauge: the gear selector and a colour LED speed strip with the
 // drive's top speed marked, filling the space below the dial.
@@ -5896,7 +5901,7 @@ function renderGlance(d) {
         style="--tc:${t.c}" title="${t.label}" aria-label="${t.label}"><span class="gl-tab-face"><svg viewBox="0 0 24 24" aria-hidden="true">${t.ico}</svg></span></button>`).join("")}
     </nav>`;
   const cur_tab = GLANCE_TABS.find((t) => t.id === glanceTab);
-  const name = v.name || v.model || "Tesla";
+  const name = v.name || v.model || "EV";
   const pg = pages[glanceTab]();
   // The rail sits in the same row as the page, centred beside it, so the
   // spine lines up with the side boxes rather than the whole screen.
@@ -6095,7 +6100,7 @@ document.querySelectorAll(".modal").forEach((m) => {
 });
 
 const staticNote =
-  "This is the static demo dashboard. Loading your own data or linking a Tesla " +
+  "This is the static demo dashboard. Loading your own data or linking your Tesla " +
   "account needs the self-hosted app — see the README to run it locally.";
 
 function setStatus(el, msg, kind) {
@@ -6421,7 +6426,7 @@ importSubmit.addEventListener("click", async () => {
       // Parse, merge and analyse entirely in the browser — no backend needed.
       const { drives, charges, vehicle } = await TA.parseFiles(pendingFiles);
       const dataset = {
-        vehicle: vehicle || { name: "Imported Tesla", model: "Imported", trim: "" },
+        vehicle: vehicle || { name: "Imported EV", model: "Imported", trim: "" },
         drives, charges, source: "imported",
       };
       localStorage.setItem(STORE_KEY, JSON.stringify(dataset));
@@ -6689,7 +6694,7 @@ async function exportCsv() {
   if (!STATIC_MODE) {
     const q = all ? "" : currentDrive ? "?current_drive=1"
       : (sinceCharge ? "?since_charge=1" : `?days=${rawRange}`);
-    await saveFile("/api/export/csv" + q, "tesla-analyzer.zip");
+    await saveFile("/api/export/csv" + q, "ev-analyzer.zip");
     return;
   }
 
@@ -6722,8 +6727,8 @@ async function exportCsv() {
     "energy_added_kwh", "charge_type", "max_power_kw", "location",
     "cost", "outside_temp_c"]));
   const blob = await zip.generateAsync({ type: "blob" });
-  await saveFile(blob, all ? "tesla-analyzer-all.zip"
-    : `tesla-analyzer-${currentDrive ? "current-drive" : sinceCharge ? "since-charge" : rawRange + "d"}.zip`);
+  await saveFile(blob, all ? "ev-analyzer-all.zip"
+    : `ev-analyzer-${currentDrive ? "current-drive" : sinceCharge ? "since-charge" : rawRange + "d"}.zip`);
 }
 const exportBtn = document.getElementById("btn-export");
 if (exportBtn) exportBtn.addEventListener("click", exportCsv);
@@ -6750,7 +6755,7 @@ function wireSectionExports() {
       const q = raw === "drive" ? "current_drive=1"
         : raw === "charge" ? "since_charge=1" : `days=${raw}`;
       saveFile(`/api/export/section?name=${encodeURIComponent(card.dataset.export)}&${q}`,
-        `tesla-analyzer-${card.dataset.export}.csv`);
+        `ev-analyzer-${card.dataset.export}.csv`);
     });
     h2.appendChild(btn);
   });
@@ -6785,7 +6790,7 @@ function buildReport(d) {
   const repKmPerSoc = repSocPct != null && repSocPct >= 0.2 && drv.total_distance_km
     ? drv.total_distance_km / repSocPct : null;
   return `
-    <h1>Tesla Analyzer — ${windowText}</h1>
+    <h1>EV Analyzer — ${windowText}</h1>
     <p class="rep-sub">${h([v.year, v.model, v.name].filter(Boolean).join(" · "))}
       · generated ${footerDateFmt.format(new Date())}</p>
     <h2>Driving</h2>
@@ -6839,7 +6844,7 @@ if (reportBtn) reportBtn.addEventListener("click", () => {
     || window.matchMedia("(display-mode: standalone)").matches;
   if (standalone) {
     const page = `<!DOCTYPE html><html><head><meta charset="utf-8">
-      <title>Tesla Analyzer report</title>
+      <title>EV Analyzer report</title>
       <style>${REPORT_STANDALONE_CSS}</style></head>
       <body>${html}<script>
         window.onload = () => setTimeout(() => window.print(), 200);
