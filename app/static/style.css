@@ -2887,7 +2887,8 @@ main > .card { max-width: 100%; }
 .gl-stackpage { gap: 6px; }
 .gl-stk-top { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .gl-stk-top .gl-hud-stat strong { font-size: clamp(16px, min(calc(5.6 * var(--gh)), calc(3.6 * var(--gw))), 28px); }
-.gl-stackpage .gl-hud-speed { font-size: min(calc(30 * var(--gh)), calc(18 * var(--gw))); }
+/* Sized to leave clear space above and below, between the boxes. */
+.gl-stackpage .gl-hud-speed { font-size: min(calc(22 * var(--gh)), calc(14 * var(--gw))); line-height: 1; padding-block: 4px; }
 .gl-stk-bot { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 8px; min-height: 0; height: clamp(54px, calc(26 * var(--gh)), 120px); }
 .gl-stk-trace { min-height: 0; display: flex; } .gl-stk-trace .gl-trace { flex: 1 1 auto; }
 .gl-stk-trip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
@@ -3256,3 +3257,20 @@ main > .card { max-width: 100%; }
 .gl-keybar { margin-top: 6px; }
 .gl-gearrow { bottom: -29px; }
 @media (orientation: landscape) and (max-height: 300px) { .gl-keybar { margin-top: 0; } }
+
+/* Auto Dim for Round Mix and the LED ladders, to the Cockpit's depth: tile
+   backs, unlit segments, scales and labels to about a fifth or a half; the
+   key numbers stay readable at about 80%. */
+.gl-dim .gl-rmix-col .gl-hud-stat { background: #06090d; border-color: #12181f; }
+.gl-dim .gl-rmix-col .gl-hud-stat::before, .gl-dim .gl-rmix-col .gl-hud-stat::after { opacity: .15; }
+.gl-dim .gl-rmix-col .gl-hud-stat strong { opacity: .8; }
+.gl-dim .gl-rmix-col .gl-hud-stat span { opacity: .5; }
+.gl-dim .gl-ladder > span, .gl-dim .gl-ladder .gl-led-scale, .gl-dim .gl-lsub { opacity: .18; }
+.gl-dim .gl-led-segs i:not(.on):not(.mid) { opacity: .14; }
+.gl-dim .gl-led-segs i.on { opacity: .28; }
+.gl-dim .gl-led-segs i.mid { opacity: .3; box-shadow: none; }
+.gl-dim .gl-ladder b { opacity: .5; }
+.gl-dim .gl-kb { opacity: .4; }
+.gl-dim .gl-kb b { opacity: 1; }
+.gl-dim .gl-gearrow b:not(.on) { opacity: .3; }
+.gl-dim .gl-gearrow b.on { opacity: .8; }
