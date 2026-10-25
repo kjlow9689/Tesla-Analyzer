@@ -4573,7 +4573,9 @@ function glTrace(hist) {
 // Wh/km as a bar of LED dots: low on the left, high on the right, green up to
 // the rated figure, amber to one and a half times it, red beyond. The lit
 // part is the figure now; a white tick marks the drive's highest.
-function glWhBar(now, rated, max) {
+// The cockpit's Wh/km dots. On a drive it is the trip's Wh/km, as the car's
+// trip card shows it; the instant figure stands in only before there is one.
+function glWhBar(now, rated, max, label = "now") {
   const R = rated || 150, N = 36, TOP = R * 2.5;
   const lit = now != null ? Math.max(0, Math.min(N, Math.round(Math.max(0, now) / TOP * N))) : 0;
   const mk = max != null ? Math.max(0, Math.min(N - 1, Math.round(max / TOP * N) - 1)) : -1;
@@ -4585,7 +4587,7 @@ function glWhBar(now, rated, max) {
   }
   const n0 = (v) => Math.round(v).toLocaleString("en-US");
   return `<div class="gl-trace"><div class="gl-trace-h"><span>Wh/km<i data-opt="1"> · low to high</i></span>
-    <span>${now != null ? `<strong class="${now > R ? "warn" : "good"}">${n0(now)}</strong><i data-opt="2"> now</i> · ` : ""}<i data-opt="3">rated </i>${n0(R)}</span></div>
+    <span>${now != null ? `<strong class="${now > R ? "warn" : "good"}">${n0(now)}</strong><i data-opt="2"> ${label}</i> · ` : ""}<i data-opt="3">rated </i>${n0(R)}</span></div>
     <div class="gl-whbar">${dots}</div></div>`;
 }
 
@@ -5066,6 +5068,16 @@ function glGearAlign(root) {
   const gb = b.getBoundingClientRect(), db = d.getBoundingClientRect();
   const dy = (db.top + db.height / 2) - (gb.top + gb.height / 2);
   if (Math.abs(dy) > 0.2 && Math.abs(dy) < 40) g.style.transform = `translateX(-50%) translateY(${dy.toFixed(1)}px)`;
+  // On a narrow screen (a foldable's cover) the footer has no gap between
+  // Auto Dim and the dots: then the row sits just above the footer, under the dial.
+  const f = (root || document).querySelector(".glance .gl-foot");
+  const gr = g.getBoundingClientRect();
+  const hit = f && [...f.children].some((c) => { const r = c.getBoundingClientRect();
+    return r.width && r.left < gr.right + 6 && r.right > gr.left - 6 && r.top < gr.bottom && r.bottom > gr.top; });
+  if (!hit) return;
+  g.style.transform = "translateX(-50%)";
+  const g0 = g.getBoundingClientRect(), fb = f.getBoundingClientRect();
+  g.style.transform = `translateX(-50%) translateY(${(fb.top - 6 - g0.bottom).toFixed(1)}px)`;
 }
 function glKeyFit(root) {
   const f = (root || document).querySelector(".glance .gl-keybar");
@@ -5225,7 +5237,9 @@ function glLadder(kind, c) {
     // Half and half: Wh/km fills upward in the top half (green under rated,
     // amber, red); the battery fills DOWNWARD from the middle line: red near
     // the line when low, green at the far end when full.
-    const H = 12, R = c.rated || 150, w = c.nowWh != null ? c.nowWh : c.whk, pc = c.pct;
+    // The trip's Wh/km, as the digital tiles and the car's own trip card show
+    // it, so it moves at the car's pace rather than with every throttle change.
+    const H = 12, R = c.rated || 150, w = c.whk != null ? c.whk : c.nowWh, pc = c.pct;
     title = "Wh/km";
     const up = w != null ? Math.max(1, Math.min(H, Math.round(Math.max(0, w) / 300 * H))) : 0;
     const bt = pc != null ? Math.max(0, Math.min(H, Math.round(pc / 100 * H))) : 0;
@@ -5280,7 +5294,7 @@ function glLadder(kind, c) {
     read = kw != null ? `${c.n(Math.abs(kw), 1)}<small>kW</small>` : "—";
   } else {
     title = "Wh/km";
-    const w = c.nowWh != null ? c.nowWh : c.whk, R = c.rated || 150;
+    const w = c.whk != null ? c.whk : c.nowWh, R = c.rated || 150;   // the trip's, as above
     const lit = w != null ? Math.max(1, Math.min(N, Math.round(Math.max(0, w) / 300 * N))) : 0;
     for (let i = 0; i < N; i++) {
       const v = (i + 0.5) / N * 300;
@@ -5724,7 +5738,7 @@ function renderGlance(d) {
         </div>`,
         glSpeedo({ value: spd, max: 160, mark: t.max_speed_kmh, gear: nw.shift, acc: glLiveState.acc, label: "Speed" }),
         `${powerBar}
-         ${glWhBar(inst && inst.whkm != null ? inst.whkm : null, rated, glLiveState.maxWh)}
+         ${tw != null ? glWhBar(tw, rated, glLiveState.maxWh, "trip") : glWhBar(inst && inst.whkm != null ? inst.whkm : null, rated, glLiveState.maxWh)}
          ${battBar}`,
         foot);
     },
