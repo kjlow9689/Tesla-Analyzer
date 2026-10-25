@@ -11733,6 +11733,7 @@ def test_login_stops_answering_after_repeated_wrong_passcodes():
     old = settings.app_passcode
     settings.app_passcode = "secret123"
     main_mod._login_fails.clear()
+    main_mod._login_fails_all.clear()
     try:
         with TestClient(app) as client:
             for _ in range(main_mod.LOGIN_MAX_FAILS):
@@ -11742,6 +11743,56 @@ def test_login_stops_answering_after_repeated_wrong_passcodes():
                                follow_redirects=False).status_code == 429
     finally:
         main_mod._login_fails.clear()
+        main_mod._login_fails_all.clear()
+        settings.app_passcode = old
+
+
+def test_login_limit_holds_when_the_guesser_fakes_its_address():
+    """The first X-Forwarded-For hop is whatever the sender writes. Keyed on
+    it, a new made-up address on every try meant unlimited guesses; the hop
+    the proxy adds, and a cap across all clients, hold either way."""
+    from app import main as main_mod
+
+    settings = get_settings()
+    old = settings.app_passcode
+    settings.app_passcode = "secret123"
+    main_mod._login_fails.clear()
+    main_mod._login_fails_all.clear()
+    try:
+        with TestClient(app) as client:
+            codes = [client.post("/login", data={"passcode": "nope"},
+                                 headers={"x-forwarded-for": f"10.0.{i}.1, 203.0.113.{i % 250}"}).status_code
+                     for i in range(main_mod.LOGIN_MAX_FAILS_ALL + 5)]
+            assert codes.count(401) == main_mod.LOGIN_MAX_FAILS_ALL and codes[-1] == 429
+            # The same fake first hop with one real address: that address's own limit.
+            main_mod._login_fails.clear()
+            main_mod._login_fails_all.clear()
+            codes = [client.post("/login", data={"passcode": "nope"},
+                                 headers={"x-forwarded-for": f"10.9.{i}.1, 198.51.100.7"}).status_code
+                     for i in range(main_mod.LOGIN_MAX_FAILS + 1)]
+            assert codes[-1] == 429
+    finally:
+        main_mod._login_fails.clear()
+        main_mod._login_fails_all.clear()
+        settings.app_passcode = old
+
+
+def test_login_cookie_is_secure_over_https():
+    from app import main as main_mod
+
+    settings = get_settings()
+    old = settings.app_passcode
+    settings.app_passcode = "secret123"
+    main_mod._login_fails.clear()
+    main_mod._login_fails_all.clear()
+    try:
+        with TestClient(app) as client:
+            r = client.post("/login", data={"passcode": "secret123"},
+                            headers={"x-forwarded-proto": "https"}, follow_redirects=False)
+            assert r.status_code == 303 and "secure" in r.headers["set-cookie"].lower()
+            r = client.post("/login", data={"passcode": "secret123"}, follow_redirects=False)
+            assert r.status_code == 303 and "secure" not in r.headers["set-cookie"].lower()
+    finally:
         settings.app_passcode = old
 
 
@@ -12718,6 +12769,41 @@ def test_live_memory_survives_malformed_readings():
         assert "PackVoltage" not in car and "Odometer" not in car
     finally:
         routes_mod._LIVE_MEM.pop(vin, None)
+
+
+def test_live_charge_and_range_stay_unknown_until_the_car_sends_them():
+    """After a restart the car may send its gear before its charge or range.
+    Those must read as unknown, not 0, or the garage line and the Range page
+    show "0% · 0 km" until the next reading."""
+    from app.api import routes as routes_mod
+
+    vin = "LIVEUNKNOWN00001"
+    try:
+        routes_mod._LIVE_MEM.pop(vin, None)
+        routes_mod._live_mem_fold(vin, "2026-10-12T10:00:00Z", {"Gear": "ShiftStateP"})
+        now = routes_mod._live_payload(vin, 68.3)["now"]
+        assert now["soc"] is None and now["range_km"] is None
+        routes_mod._live_mem_fold(vin, "2026-10-12T10:00:01Z", {"Soc": 71.5, "RatedRange": 200.0})
+        now = routes_mod._live_payload(vin, 68.3)["now"]
+        assert now["soc"] == 71.5 and now["range_km"] > 300
+    finally:
+        routes_mod._LIVE_MEM.pop(vin, None)
+
+
+def test_a_record_with_a_malformed_vin_does_not_fail_its_batch():
+    """One record whose VIN is not text was a 500 for the whole batch, which
+    the bridge then resent; it is skipped instead, on both lanes."""
+    settings = get_settings()
+    old_pc, old_sk = settings.app_passcode, settings.sync_key
+    settings.app_passcode, settings.sync_key = "pc", "k"
+    try:
+        with TestClient(app) as client:
+            bad = {"records": [{"vin": ["x"], "createdAt": "2026-10-12T00:10:00Z", "data": []}]}
+            for path in ("/api/telemetry/live", "/api/telemetry"):
+                r = client.post(path, json=bad, headers={"x-sync-key": "k"})
+                assert r.status_code == 200, (path, r.text)
+    finally:
+        settings.app_passcode, settings.sync_key = old_pc, old_sk
 
 
 def test_the_live_fast_lane_stays_in_memory():

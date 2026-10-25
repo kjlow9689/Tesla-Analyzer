@@ -1,6 +1,7 @@
 """REST API endpoints."""
 from __future__ import annotations
 
+import copy
 import hmac
 import json as _json_mod
 import math
@@ -1648,7 +1649,7 @@ def road_overrides(session: Session = Depends(get_session)):
 @router.api_route("/road-overrides/add", methods=["GET", "POST"])
 def road_overrides_add(
     at: str = Query(..., description="lat,lon on the road, e.g. 5.3356,100.2978"),
-    radius_m: float = Query(CITY_OVERRIDE_RADIUS_DEFAULT_M, ge=50, le=3000),
+    radius_m: float = Query(CITY_OVERRIDE_RADIUS_DEFAULT_M, ge=50, le=3000, allow_inf_nan=False),
     name: str = Query(""),
     session: Session = Depends(get_session),
 ):
@@ -7380,7 +7381,7 @@ def telegram_chat_id():
 def repair_trip_boundary(
     closed_id: int = Query(...),
     open_id: int = Query(...),
-    boundary_odo_km: float = Query(...),
+    boundary_odo_km: float = Query(..., allow_inf_nan=False),
     closed_end_time: str | None = Query(None),
     closed_end_coords: str | None = Query(None),
     apply: bool = Query(False),
@@ -7497,8 +7498,8 @@ def repair_trip_boundary(
 @router.api_route("/repair-departure-start", methods=["GET", "POST"])
 def repair_departure_start(
     drive_id: int = Query(...),
-    true_duration_min: float | None = Query(None),
-    true_wh_per_km: float | None = Query(None),
+    true_duration_min: float | None = Query(None, allow_inf_nan=False),
+    true_wh_per_km: float | None = Query(None, allow_inf_nan=False),
     apply: bool = Query(False),
     session: Session = Depends(get_session),
 ):
@@ -7888,8 +7889,8 @@ def estimated_tails(
 @router.api_route("/repair-arrival-tail", methods=["GET", "POST"])
 def repair_arrival_tail(
     drive_id: int = Query(...),
-    true_distance_km: float = Query(...),
-    true_duration_min: float | None = Query(None),
+    true_distance_km: float = Query(..., allow_inf_nan=False),
+    true_duration_min: float | None = Query(None, allow_inf_nan=False),
     apply: bool = Query(False),
     session: Session = Depends(get_session),
 ):
@@ -8467,8 +8468,8 @@ def _energy_basis_agreement(session: Session, vehicle: Any) -> dict[str, Any]:
 
 @router.api_route("/add-screen-reading", methods=["GET", "POST"])
 def add_screen_reading(
-    kwh: float = Query(..., gt=0),
-    pct: float = Query(..., gt=0, le=100),
+    kwh: float = Query(..., gt=0, allow_inf_nan=False),
+    pct: float = Query(..., gt=0, le=100, allow_inf_nan=False),
     session: Session = Depends(get_session),
 ):
     """Record one Since-Charge reading off the car's Energy screen.
@@ -8514,8 +8515,8 @@ def add_screen_reading(
 @router.api_route("/drop-screen-reading", methods=["GET", "POST"])
 def drop_screen_reading(
     all: bool = Query(False),
-    kwh: float | None = Query(None, description="The reading's kWh, as listed"),
-    pct: float | None = Query(None, description="The reading's %, as listed"),
+    kwh: float | None = Query(None, description="The reading's kWh, as listed", allow_inf_nan=False),
+    pct: float | None = Query(None, description="The reading's %, as listed", allow_inf_nan=False),
     session: Session = Depends(get_session),
 ):
     """Remove one screen reading by its figures, or all of them.
@@ -8889,9 +8890,9 @@ def add_car_reading(
 
 @router.get("/accuracy")
 def accuracy(
-    target_pct: float = Query(2.0, gt=0),
-    since_charge_kwh: float | None = Query(None, gt=0),
-    since_charge_km: float | None = Query(None, gt=0),
+    target_pct: float = Query(2.0, gt=0, allow_inf_nan=False),
+    since_charge_kwh: float | None = Query(None, gt=0, allow_inf_nan=False),
+    since_charge_km: float | None = Query(None, gt=0, allow_inf_nan=False),
     session: Session = Depends(get_session),
 ):
     """How far this app is from the car, decomposed, over every recorded pair.
@@ -9171,8 +9172,8 @@ def accuracy(
 @router.api_route("/set-charge-billed", methods=["GET", "POST"])
 def set_charge_billed(
     charge_id: int = Query(...),
-    kwh: float = Query(..., gt=0),
-    paid: float | None = Query(None, ge=0),
+    kwh: float = Query(..., gt=0, allow_inf_nan=False),
+    paid: float | None = Query(None, ge=0, allow_inf_nan=False),
     session: Session = Depends(get_session),
 ):
     """Record what a charger's receipt said: energy delivered, and paid.
@@ -9250,7 +9251,7 @@ def set_charge_billed(
 
 @router.get("/capacity-evidence")
 def capacity_evidence(
-    min_swing_pct: float = Query(15.0, ge=1.0, le=90.0),
+    min_swing_pct: float = Query(15.0, ge=1.0, le=90.0, allow_inf_nan=False),
     session: Session = Depends(get_session),
 ):
     """What this car's own charges say its usable pack is.
@@ -10585,7 +10586,7 @@ def energy_reconcile(session: Session = Depends(get_session)):
 @router.api_route("/repair-all", methods=["GET", "POST"])
 def repair_all(
     days: int = Query(730, ge=1, le=3650),
-    min_km: float = Query(0.02, ge=0.001),
+    min_km: float = Query(0.02, ge=0.001, allow_inf_nan=False),
     apply: bool = Query(False),
     session: Session = Depends(get_session),
 ):
@@ -10760,8 +10761,8 @@ def _gaps_note(skipped: int, bad_blocks: int, unreachable: int = 0) -> str:
 @router.get("/trip-gaps")
 def trip_gaps(
     days: int = Query(30, ge=1, le=730),
-    min_km: float = Query(0.01, ge=0.001),
-    from_odo_km: float | None = Query(None),
+    min_km: float = Query(0.01, ge=0.001, allow_inf_nan=False),
+    from_odo_km: float | None = Query(None, allow_inf_nan=False),
     from_time: str | None = Query(None),
     session: Session = Depends(get_session),
 ):
@@ -11005,8 +11006,8 @@ def trip_gaps(
 def repair_missing_trip(
     start_time: str = Query(...),
     end_time: str = Query(...),
-    distance_km: float | None = Query(None),
-    energy_kwh: float | None = Query(None),
+    distance_km: float | None = Query(None, allow_inf_nan=False),
+    energy_kwh: float | None = Query(None, allow_inf_nan=False),
     start_location: str | None = Query(None),
     end_location: str | None = Query(None),
     apply: bool = Query(False),
@@ -11281,7 +11282,7 @@ def set_drive_place(
 @router.api_route("/repair-split-trip", methods=["GET", "POST"])
 def repair_split_trip(
     drive_id: int = Query(...),
-    boundary_odo_km: float = Query(...),
+    boundary_odo_km: float = Query(..., allow_inf_nan=False),
     first_start: str | None = Query(None),
     first_end: str | None = Query(None),
     second_start: str | None = Query(None),
@@ -11756,7 +11757,7 @@ def sync_log_summary(session: Session = Depends(get_session)):
 @router.get("/recheck-plan")
 def recheck_plan(
     days: int = Query(RECHECK_FIT_DAYS, ge=7, le=365),
-    wide_min: float = Query(40.0, gt=0),
+    wide_min: float = Query(40.0, gt=0, allow_inf_nan=False),
     max_departures: int = Query(0, ge=0),
     session: Session = Depends(get_session),
 ):
@@ -12073,8 +12074,8 @@ def polling_coverage(session: Session = Depends(get_session)):
 @router.api_route("/repair-trip-energy", methods=["GET", "POST"])
 def repair_trip_energy(
     drive_id: int = Query(...),
-    true_wh_per_km: float | None = Query(None),
-    true_consumed_pct: float | None = Query(None),
+    true_wh_per_km: float | None = Query(None, allow_inf_nan=False),
+    true_consumed_pct: float | None = Query(None, allow_inf_nan=False),
     apply: bool = Query(False),
     session: Session = Depends(get_session),
 ):
@@ -12145,8 +12146,8 @@ def repair_trip_energy(
 @router.api_route("/repair-lost-departure", methods=["GET", "POST"])
 def repair_lost_departure(
     drive_id: int = Query(...),
-    true_distance_km: float = Query(...),
-    true_duration_min: float | None = Query(None),
+    true_distance_km: float = Query(..., allow_inf_nan=False),
+    true_duration_min: float | None = Query(None, allow_inf_nan=False),
     apply: bool = Query(False),
     session: Session = Depends(get_session),
 ):
@@ -12653,7 +12654,6 @@ def summary(
             # shares chargeRowHtml with that list, so it needs the field.
             "location_raw": last_charge.location,
             "payable_kwh": round(last_charge.payable_kwh or 0.0, 3) or None,
-            "billed_kwh": round(last_charge.billed_kwh or 0.0, 3) or None,
             "rate_per_kwh": (
                 round(last_charge.cost / (last_charge.payable_kwh or last_charge.energy_added_kwh), 3)
                 if last_charge.energy_added_kwh else None
@@ -13719,6 +13719,10 @@ def _telemetry_ingest(payload: dict, session: Session):
     records = payload.get("records")
     if not isinstance(records, list):
         raise HTTPException(400, "Expected {'records': [...]}.")
+    # One malformed record (a VIN that is not text) failed the whole batch,
+    # and the bridge would resend it, failing again: skip it instead.
+    records = [r for r in records
+               if isinstance(r, dict) and (r.get("vin") is None or isinstance(r.get("vin"), str))]
 
     # One query for every store this batch reads, and none for re-reading
     # them — see state.enable_cache. Safe here because this is a short request
@@ -15091,9 +15095,9 @@ CHARGE_END_PARKED_KWH = 0.25
 @router.api_route("/telemetry/set-charge-end", methods=["GET", "POST"])
 def telemetry_set_charge_end(
     start: str = Query(..., description="the charge's start_time, as stored"),
-    soc_end: float | None = Query(None, ge=0, le=100),
-    pair_level: float | None = Query(None, ge=0, le=100),
-    pair_energy: float | None = Query(None, ge=0),
+    soc_end: float | None = Query(None, ge=0, le=100, allow_inf_nan=False),
+    pair_level: float | None = Query(None, ge=0, le=100, allow_inf_nan=False),
+    pair_energy: float | None = Query(None, ge=0, allow_inf_nan=False),
     apply: bool = Query(False),
     session: Session = Depends(get_session),
 ):
@@ -15160,6 +15164,12 @@ def _live_snapshot(car: dict, ts: float) -> dict:
     snap = sync_mod.snapshot_from_telemetry(car, ts)
     if car.get("Odometer") is None:
         snap["odo_km"] = None
+    # The same for charge and range: 0 here read as "0% · 0 km" on the garage
+    # line and the Range page after a restart, until the car next sent them.
+    if car.get("Soc") is None:
+        snap["soc"] = None
+    if car.get("RatedRange") is None:
+        snap["range_km"] = None
     # A car in Park is not moving, whatever the last speed it sent was: Tesla
     # may follow the last non-zero reading with an invalid one, which the fold
     # ignores, and the old speed would then hold the drive open and the dial up.
@@ -15274,8 +15284,6 @@ def _live_mem_fold(vin: str | None, created_at, fields: dict) -> None:
         after = _LIVE_MEM.get(vin) or {}
         learned = int(after.get("_sign") or 0)
         g1, o1 = after.get("Gear"), "_go" in after
-        if abs(learned) >= 8:
-            _live_sign_save(vin, 1 if learned > 0 else -1)
         if g0 != g1 or o0 != o1:
             # Only on a change of gear or of the drive being open: a line or
             # two per journey, so a Live page that disagrees with the car can
@@ -15284,6 +15292,10 @@ def _live_mem_fold(vin: str | None, created_at, fields: dict) -> None:
             print(f"[live] {vin[-6:]} gear {g0}->{g1} speed {after.get('VehicleSpeed')} "
                   f"drive {'open' if o1 else 'closed'} record_age {time.time() - t:.0f}s "
                   f"keys {','.join(sorted(fields))[:80]}", flush=True)
+    # Outside the lock: it may write the database, and the live streams wait
+    # on this lock for every frame.
+    if abs(learned) >= 8:
+        _live_sign_save(vin, 1 if learned > 0 else -1)
 
 
 def _live_align_to_shadows(shadows: dict) -> None:
@@ -15468,6 +15480,7 @@ def telemetry_live_push(payload: dict = Body(...)):
     records = payload.get("records")
     if not isinstance(records, list):
         raise HTTPException(400, "Expected {'records': [...]}.")
+    records = [r for r in records if isinstance(r, dict) and isinstance(r.get("vin"), str)]
     # One log line when the fast lane falls quiet for a while and resumes —
     # enough to tell, after a stall on the Live page, whether the car's
     # records stopped coming (lag ~0, a long gap: the car or the relay) or
@@ -15508,7 +15521,12 @@ def _live_payload(vin: str | None, capacity_kwh: float | None) -> dict:
     if not vin:
         vin = _live_latest_vin()
     cap = capacity_kwh or 75.0
-    car = _LIVE_MEM.get(vin) if vin else None
+    # A copy taken under the lock: a record folding in on another thread
+    # meanwhile could otherwise change the drive mid-read (energy summed to
+    # one second, power still from the one before) or fail the whole frame,
+    # which the page then shows as "not driving" for a moment.
+    with _LIVE_LOCK:
+        car = copy.deepcopy(_LIVE_MEM.get(vin)) if vin else None
     ts = _telemetry_ts(car.get("_ts")) if car else None
     if not car or not ts:
         return {"driving": False, "vin": vin, "trip": None, "now": None,
@@ -15585,7 +15603,7 @@ def _live_payload(vin: str | None, capacity_kwh: float | None) -> dict:
 @router.get("/live")
 def live_now(
     vin: str | None = Query(None),
-    capacity_kwh: float | None = Query(None, gt=20, lt=200),
+    capacity_kwh: float | None = Query(None, gt=20, lt=200, allow_inf_nan=False),
     view: int = Query(0),
     debug: int = Query(0),
 ):
@@ -15695,7 +15713,7 @@ def _record_live_view(vin: str, start: float, end: float, ns: int = 0, np_: int 
 
 
 @router.get("/live/views")
-def live_views(days: float = Query(3, gt=0, le=30), session: Session = Depends(get_session)):
+def live_views(days: float = Query(3, gt=0, le=30, allow_inf_nan=False), session: Session = Depends(get_session)):
     """When the Live page was on screen in the last ``days``, for the trip
     list to say how long it was watched during each drive, and how it was fed:
     [[vin, open_ts, close_ts, stream_n, poll_n], ...], the spell still running
@@ -15717,7 +15735,7 @@ def live_views(days: float = Query(3, gt=0, le=30), session: Session = Depends(g
 async def live_stream(
     request: Request,
     vin: str | None = Query(None),
-    capacity_kwh: float | None = Query(None, gt=20, lt=200),
+    capacity_kwh: float | None = Query(None, gt=20, lt=200, allow_inf_nan=False),
 ):
     """The same answer as /api/live, pushed the instant a record arrives
     (Server-Sent Events), so the page shows each reading as the relay
