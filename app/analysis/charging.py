@@ -172,6 +172,9 @@ def analyze(charges: list[Charge], drives: list[Drive] | None = None) -> dict[st
             # session logged before this existed (the frontend falls back
             # to guessing from location text in that case).
             "source": getattr(c, "price_source", "") or None,
+            # Name of the saved charger profile that tagged this session
+            # (e.g. "Condo charger"); None when none did.
+            "charger_profile": getattr(c, "charger_profile", "") or None,
             # The rest are diagnostic-only — not rendered on the list row,
             # kept here so the "copy diagnostics" button can hand them back
             # for one session without a DB query, the same way a trip's own
@@ -212,6 +215,15 @@ def analyze(charges: list[Charge], drives: list[Drive] | None = None) -> dict[st
         for c in sorted(charges, key=lambda c: c.start_time, reverse=True)
     ]
 
+    # Home AC rate: sessions priced as Home AC, the condo's AC charger included.
+    # An AC session on the condo's AC charger carries the profile label too,
+    # but is still Home AC (price_source "home"), so it stays in.
+    home_ac = [c for c in ac if getattr(c, "price_source", "") == "home"
+               and not getattr(c, "is_free", False)]
+    home_ac_energy = sum(c.energy_added_kwh for c in home_ac)
+    profiled = [c for c in charges if getattr(c, "charger_profile", "")
+                and getattr(c, "charge_type", "") == "DC"]
+
     return {
         "available": True,
         "total_sessions": len(charges),
@@ -221,6 +233,11 @@ def analyze(charges: list[Charge], drives: list[Drive] | None = None) -> dict[st
         "dc_cost": round(sum(c.cost for c in dc), 2),
         "cost_per_100km": cost_per_100km,
         "avg_cost_per_kwh": round(safe_div(total_cost, total_energy), 3),
+        "home_ac_cost_per_kwh": (round(safe_div(sum(c.cost for c in home_ac), home_ac_energy), 3)
+                                 if home_ac_energy else None),
+        "home_ac_sessions": len(home_ac),
+        "condo_dc_sessions": len(profiled),
+        "condo_dc_energy_kwh": round(sum(c.energy_added_kwh for c in profiled), 1),
         "ac_sessions": len(ac),
         "dc_sessions": len(dc),
         "ac_energy_kwh": round(ac_energy, 1),

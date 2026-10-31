@@ -1868,6 +1868,10 @@ function chargeDiagnostics(c, ctx) {
       capacity_samples: c.capacity_samples,
       cost: c.cost, is_free: c.is_free, rate_per_kwh: c.rate_per_kwh,
       source: c.source,
+      // Who runs the charger, where the car said (Tesla, CCS...), and the
+      // saved charger profile that tagged the session; null when neither.
+      charger_network: c.charger_network ?? null,
+      charger_profile: c.charger_profile ?? null,
     },
   }, null, 2);
 }
@@ -2124,6 +2128,7 @@ function renderLists(d) {
     const rows = allCharges.map((c, i) => chargeRowHtml(c, d.currency, i)).join("");
     chargesEl.innerHTML = rows || '<li class="empty">No charging sessions in this window</li>';
     wireEditRateButtons(chargesEl);
+    wireChargerProfileButtons(chargesEl);
     wireRenameLocButtons(chargesEl);
     wireChargeDiagButtons(chargesEl);
     // Only offer the charge tools when there's a real (self-hosted) DB behind them.
@@ -2147,6 +2152,10 @@ function renderLists(d) {
 // defaults the backend seeds a fresh install with, so the buttons still
 // show a sane number before the first fetch resolves.
 let pricingPrefs = null;
+// Saved Home charger profile ({name, kind, rate} or null) and how many past
+// sessions it would tag - /api/charger-profile. Drives the "DC at Home" hint.
+let chargerProfile = null;
+let chargerProfilePast = 0;
 const PRICING_PREFS_FALLBACK = {
   rates: { public_ac: 1.10, public_dc: 1.40, home_ac: 0.90, home_dc: 1.13, office_ac: 0.57, office_dc: 0.57 },
   default_source: "home",
@@ -2174,6 +2183,16 @@ async function loadPricingPrefs() {
     pricingPrefs = await (await fetch("/api/pricing-prefs")).json();
   } catch (e) { /* keep whatever's cached; callers fall back below */ }
   renderDefaultSourceBtn();
+  await loadChargerProfile();
+}
+
+async function loadChargerProfile() {
+  if (STATIC_MODE) return;
+  try {
+    const r = await (await fetch("/api/charger-profile")).json();
+    chargerProfile = r.profile || null;
+    chargerProfilePast = r.past_count || 0;
+  } catch (e) { /* hint just stays off */ }
 }
 
 // Quick-switch button beside "Recent Charges": tap to cycle Public → Home →
@@ -2252,7 +2271,16 @@ function chargeRowHtml(c, currency, idx) {
   const when = `${tripWhen(c.start_time)} → ${tripEnd(c.start_time, c.end_time)}`;
   const kind = c.charger_network ? `${c.charge_type} · ${c.charger_network}` : c.charge_type;
   const loc = c.location ? `${c.location} · ${kind}` : kind;
-  const locHtml = h(loc);
+  // A saved charger profile (the condo's chargers) keeps the place
+  // label as it was and adds a tag. A DC session at Home with no profile
+  // saved yet gets a one-tap hint instead.
+  let locHtml = h(loc);
+  if (c.charger_profile) {
+    const why = c.charge_type === "DC" ? "Condo charger, priced at your Home DC rate"
+      : "Condo charger, priced at your Home AC rate";
+    locHtml += ` <span class="charge-profile-tag" title="${why}">` +
+      `${h("🅿️ " + c.charger_profile)}</span>`;
+  }
   const kwh = `${fmt(c.energy_added_kwh, 1)} kWh`;
   const soc = c.start_soc != null && c.end_soc != null
     ? ` · ${fmt(c.start_soc)}% → ${fmt(c.end_soc)}%` : "";
@@ -2302,6 +2330,13 @@ function chargeRowHtml(c, currency, idx) {
         `title="${title}">${icon}</button>`;
     }
   }
+  let profileHint = "";
+  const atHome = c.source === "home" || /\bhome\b/i.test(c.location || "");
+  if (!STATIC_MODE && c.id != null && !chargeSelectMode && !chargerProfile &&
+      c.charge_type === "DC" && atHome && !c.charger_profile) {
+    profileHint = `<span class="charge-profile-hint">DC at Home: is this a public charger? ` +
+      `<button class="charge-profile-save" data-charge-id="${c.id}">Save as condo charger</button></span>`;
+  }
   // Copy this session's raw figures for checking against the car's own
   // screen or a charger receipt — same tool as a trip's own ⧉, and needs no
   // id (an old row with none still has fields worth copying).
@@ -2312,7 +2347,8 @@ function chargeRowHtml(c, currency, idx) {
   return `<li class="charge${chargeSelectMode && c.id != null ? " selectable" : ""}">` +
     `<span class="charge-main">${check}<span class="charge-loc">${locHtml}${renameBtn}</span>` +
     `<span class="charge-when">${when}</span></span>` +
-    `<span class="charge-figs">${kwh}${soc} · ${cost}${rate}${billedNote}${buttons}${diagBtn}</span></li>`;
+    `<span class="charge-figs">${kwh}${soc} · ${cost}${rate}${billedNote}${buttons}${diagBtn}</span>` +
+    `${profileHint}</li>`;
 }
 
 // TNB residential Time-of-Use, all-in per-kWh (energy + network + capacity
@@ -2386,6 +2422,51 @@ function wireEditRateButtons(root) {
         btn.dataset.startTime, btn.dataset.billed, btn.dataset.payable, btn.dataset.type);
     });
   });
+}
+
+// "Save as condo charger" - one tap on a DC-at-Home card. The tapped
+// session supplies the default rate; every other past session is left alone
+// until "Apply to past charges" (here offered right after, and in Rates).
+function wireChargerProfileButtons(root) {
+  root.querySelectorAll(".charge-profile-save[data-charge-id]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      btn.disabled = true;
+      try {
+        const resp = await fetch("/api/charger-profile", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ charge_id: +btn.dataset.chargeId }),
+        });
+        if (!resp.ok) throw new Error((await resp.json()).detail || "Failed");
+        const r = await resp.json();
+        chargerProfile = r.profile; chargerProfilePast = r.past_count || 0;
+        if (chargerProfilePast > 0) await applyChargerProfileToPast();
+        load();
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "Couldn't save - try again";
+      }
+    });
+  });
+}
+
+// Previews how many past sessions would be tagged, then asks. Each is priced
+// at the Home rate for its type; energy, SoC, kWh and location never change.
+async function applyChargerProfileToPast() {
+  const post = (confirm) => fetch("/api/charger-profile/apply-past", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm }),
+  });
+  const pv = await (await post(false)).json();
+  if (!pv.count) return { count: 0, applied: false };
+  if (!window.confirm(`Tag ${pv.count} past charge${pv.count === 1 ? "" : "s"} at Home as ` +
+      `"${chargerProfile.name}"?\n\nOne priced as anything other than Home (such as an earlier ` +
+      `condo DC rate) is re-priced at today's Home rate for its type; the rest keep their cost.`)) {
+    return { count: pv.count, applied: false };
+  }
+  const done = await (await post(true)).json();
+  chargerProfilePast = 0;
+  return { count: done.count, applied: true };
 }
 
 // The ✏️ button on a Recent Charges row. `rawLoc` is what the row stores,
@@ -3240,10 +3321,41 @@ function setupRatesModal() {
     renderUpdatedNote(prefs);
   }
 
+  const cpInfo = document.getElementById("cp-info");
+  const cpApply = document.getElementById("cp-apply");
+  const cpRemove = document.getElementById("cp-remove");
+  function renderProfile() {
+    if (!cpInfo) return;
+    if (!chargerProfile) {
+      cpInfo.textContent = "None saved. Tap \u201cSave as condo charger\u201d on a DC charge at Home.";
+    } else {
+      cpInfo.textContent = `${chargerProfile.name} \u00b7 priced at your Home AC and DC rates. ` +
+        `${chargerProfilePast} past charge${chargerProfilePast === 1 ? "" : "s"} to tag or re-price.`;
+    }
+    cpApply?.classList.toggle("hidden", !chargerProfile);
+    cpRemove?.classList.toggle("hidden", !chargerProfile);
+  }
+  cpApply?.addEventListener("click", async () => {
+    const res = await applyChargerProfileToPast();
+    await loadChargerProfile();
+    renderProfile();
+    setStatus(statusEl, res.applied ? `Tagged ${res.count}.` : (res.count ? "" : "Nothing to tag."), "ok");
+    if (res.applied) load();
+  });
+  cpRemove?.addEventListener("click", async () => {
+    if (!window.confirm("Remove the charger profile? Sessions already tagged keep their tag.")) return;
+    await fetch("/api/charger-profile", { method: "DELETE" });
+    await loadChargerProfile();
+    renderProfile();
+    load();
+  });
+
   btn.addEventListener("click", async () => {
     setStatus(statusEl, "", "");
     if (!pricingPrefs) await loadPricingPrefs();
+    await loadChargerProfile();
     populate();
+    renderProfile();
     openModal("rates-modal");
   });
 

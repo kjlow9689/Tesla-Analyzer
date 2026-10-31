@@ -190,6 +190,23 @@ def _ensure_column(table: str, column: str, ddl_type: str, default_sql: str) -> 
         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type} DEFAULT {default_sql}"))
 
 
+def _rename_charger_profile(old: str, new: str) -> None:
+    """The saved charger profile's first default name was "Condo DC charger";
+    it covers the condo's AC chargers too now, so it is "Condo charger". Renamed
+    in the profile and on every session it tagged. Idempotent: nothing matches
+    once done, and a name the owner chose is left alone."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        if inspector.has_table("charges"):
+            conn.execute(text("UPDATE charges SET charger_profile = :new WHERE charger_profile = :old"),
+                         {"new": new, "old": old})
+        if inspector.has_table("settings"):
+            conn.execute(text("UPDATE settings SET value = REPLACE(value, :o, :n) WHERE key = :k"),
+                         {"o": f'"name": "{old}"', "n": f'"name": "{new}"', "k": "charger_profile_home"})
+
+
 def _ensure_unique_index(table: str, name: str, columns: tuple[str, ...]) -> None:
     """Add a unique index, but only once the data can actually satisfy it.
 
@@ -361,11 +378,13 @@ def init_db() -> None:
     _ensure_column("charges", "implied_capacity_kwh", "FLOAT", "NULL")
     _ensure_column("charges", "capacity_samples", "INTEGER", "NULL")
     _ensure_column("charges", "price_source", "VARCHAR(10)", "''")
+    _ensure_column("charges", "charger_profile", "VARCHAR(40)", "''")
     _ensure_column("charges", "source", "VARCHAR(12)", "''")
     _ensure_column("charges", "shadow_start_ts", "FLOAT", "NULL")
     _ensure_column("charges", "polled_kwh", "FLOAT", "NULL")
     _ensure_column("charges", "energy_source", "VARCHAR(16)", "''")
     _ensure_column("charges", "charger_network", "VARCHAR(16)", "''")
+    _rename_charger_profile("Condo DC charger", "Condo charger")
     # 0, not NULL: "not set" and "set to zero" mean the same thing here (fall
     # back to the global pace), so there is nothing for NULL to carry.
     _ensure_column("places", "departure_pace_kmh", "FLOAT", "0.0")
