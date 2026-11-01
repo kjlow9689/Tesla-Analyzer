@@ -4648,6 +4648,20 @@ def _promote_shadow_trips(session: Session, apply: bool = False,
             vehicle_id = next(iter(vin_to_vehicle.values()))
 
         row = by_shadow.get((vehicle_id, t_start.replace(microsecond=0)))
+        if row is not None and getattr(row, "hand_repaired", False):
+            # Same start, but a hand repair has since changed the row (a split
+            # keeps the first leg's start): correcting it from the stream would
+            # put the whole trip back over the repair, and the second leg would
+            # then count the same kilometres twice.
+            claimed.add(row.id)
+            kept_repaired.append({"start": t.get("start_time"),
+                                  "was": {"id": row.id, "km": round(row.distance_km or 0.0, 3),
+                                          "kwh": round(row.energy_used_kwh or 0.0, 3),
+                                          "source": row.source},
+                                  "now": {"km": t.get("distance_km"), "kwh": t.get("energy_kwh")},
+                                  "action": "kept",
+                                  "why": "this trip was repaired by hand; left as the repair made it"})
+            continue
         if row is None:
             # A row this trip was written into whose start has since been moved
             # by a hand repair (repair-lost-departure moved one 44 minutes on
@@ -4682,6 +4696,7 @@ def _promote_shadow_trips(session: Session, apply: bool = False,
             best = None
             for d in drives:
                 if (d.vehicle_id != vehicle_id or d.id in claimed
+                        or getattr(d, "hand_repaired", False)
                         or d.shadow_start_ts is not None
                         or not d.start_time or not d.end_time):
                     continue
@@ -11637,8 +11652,10 @@ def repair_split_trip(
             # Losing the flag here would let a number this app invented pass
             # for a measurement on the strength of having been divided.
             energy_estimated=getattr(drive, "energy_estimated", False),
+            source=drive.source, hand_repaired=True,
         )
         session.add(second)
+        drive.hand_repaired = True
         # The original becomes the FIRST leg: it already carries the correct
         # start, so rewriting its end is the smaller change — and keeping its
         # id means anything referring to this trip still points at a real one.
@@ -11653,8 +11670,17 @@ def repair_split_trip(
         drive.end_coords = mid_coords
         # Its own SoC pair no longer describes anything measured — this leg was
         # never watched — so flatten it rather than leave a drop that would be
-        # read as this drive's consumption.
-        drive.end_soc = drive.start_soc
+        # read as this drive's consumption. A streamed trip with nothing blind
+        # was watched end to end: the drop is shared by distance instead.
+        # (A few tens of metres unseen at the start, the usual gap before the
+        # first reading, still leaves the trip watched: #3300 had 0.051 km.)
+        if (drive.source or "") == "telemetry" and blind <= 0.5 and drive.start_soc is not None \
+                and drive.end_soc is not None:
+            mid_soc = round(drive.start_soc - (drive.start_soc - drive.end_soc) * a_km / max(a_km + b_km, 1e-9), 2)
+            second.start_soc = mid_soc
+            drive.end_soc = mid_soc
+        else:
+            drive.end_soc = drive.start_soc
         drive.start_recovered_km, drive.start_lost_km = a_blind, 0.0
         drive.end_lost_km, drive.end_est_km, drive.tail_trim_sec = 0.0, None, None
         # Its arrival instrumentation belonged to the trip's OLD end, which is
@@ -12440,6 +12466,58 @@ def repair_lost_departure(
         drive.duration_min = new_duration
         if new_duration:
             drive.avg_speed_kmh = round(new_distance / (new_duration / 60.0), 1)
+        drive.hand_repaired = True
+        session.commit()
+    return plan
+
+
+@router.api_route("/set-trip-stop", methods=["GET", "POST"])
+def set_trip_stop(
+    drive_id: int = Query(...),
+    name: str | None = Query(None, max_length=120),
+    coords: str | None = Query(None, max_length=60),
+    apply: bool = Query(False),
+    session: Session = Depends(get_session),
+):
+    """Name the stop between a trip and the one after it.
+
+    A split (repair-split-trip) leaves that stop unnamed when nothing recorded
+    where the car stood, which is exactly when a split is needed: 1 November,
+    #3300 and #3303 met at a stop in poor coverage. Give ``coords`` ("lat,
+    lon", looked up like any other place) or a ``name``, or both (the name
+    wins as the label, the coordinates are kept). Sets this trip's end and,
+    when the next trip starts on the same odometer reading, that trip's start.
+    Dry run by default.
+    """
+    drive = session.get(Drive, drive_id)
+    if drive is None:
+        raise HTTPException(404, "No such trip.")
+    label, area, raw = (name or "").strip(), "", (coords or "").strip()
+    if raw:
+        if not pricing_prefs._is_coords(raw):
+            raise HTTPException(422, "coords must look like '5.3697, 100.3153'.")
+        found, area = _place_and_area(raw, session)
+        label = label or found
+    if not label:
+        raise HTTPException(422, "Give a name, coordinates, or both.")
+    nxt = session.scalars(
+        select(Drive).where(Drive.vehicle_id == drive.vehicle_id,
+                            Drive.start_time > drive.start_time)
+        .order_by(Drive.start_time).limit(1)).first()
+    joins = (nxt is not None and drive.end_odo_km is not None and nxt.start_odo_km is not None
+             and abs(nxt.start_odo_km - drive.end_odo_km) <= 0.002)
+    plan = {"drive_id": drive.id, "end_location": [drive.end_location, label],
+            "next_drive_id": nxt.id if joins else None,
+            "next_start_location": [nxt.start_location, label] if joins else None,
+            "coords": raw or None, "applied": apply}
+    if apply:
+        drive.end_location, drive.end_area = label, area or drive.end_area
+        if raw:
+            drive.end_coords = raw
+        if joins:
+            nxt.start_location, nxt.start_area = label, area or nxt.start_area
+            if raw:
+                nxt.start_coords = raw
         session.commit()
     return plan
 
