@@ -1175,6 +1175,14 @@ export default {
           <input type="number" id="edit-charge-billed" min="0" step="0.01" inputmode="decimal">
           <span class="field-hint" id="edit-charge-billed-hint"></span>
         </label>
+        <!-- The car reports the plug, not who runs the charger: a CCS2 car at
+             a Supercharger reports CCS. Options follow the session's type
+             (filled in app.js). Remembered for the place and type. -->
+        <label class="field hidden" id="edit-charge-network-row">
+          <span class="field-label">Charger</span>
+          <select id="edit-charge-network"></select>
+          <span class="field-hint" id="edit-charge-network-hint"></span>
+        </label>
         <button type="submit" class="btn btn-accent">Save</button>
       </form>
       <span id="edit-charge-status" class="status"></span>

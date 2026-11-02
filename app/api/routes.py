@@ -4214,6 +4214,20 @@ def _mark_swept(session: Session) -> None:
         "at": time.time()}))
 
 
+def _arrival_tail_at(session: Session, trip: dict) -> float | None:
+    """The arrival tail of the place a staged trip ended at (see
+    _place_tail_km), or None. Never raises: a missing tail only means the
+    gap is split the default way."""
+    try:
+        lat, lon = trip.get("end_lat"), trip.get("end_lon")
+        if lat is None or lon is None:
+            return None
+        name = _place(f"{float(lat):.4f}, {float(lon):.4f}", session)
+        return _place_tail_km(session, name) if name else None
+    except Exception:   # noqa: BLE001
+        return None
+
+
 def _append_trip(trips: list, finished: dict,
                  session: Session | None = None, via: str = "close") -> bool:
     """Add a finished trip to the store, paying back the one before it.
@@ -4246,8 +4260,11 @@ def _append_trip(trips: list, finished: dict,
         rested = _rested_odo_between(session, finished.get("vin"),
                                      previous.get("end_ts"),
                                      finished.get("start_ts"))
+    tail = None
+    if session is not None and previous is not None and previous.get("end_odo_unconfirmed"):
+        tail = _arrival_tail_at(session, previous)
     paid = previous is not None and sync_mod.recover_sleep_gap(
-        previous, finished, rested_odo_km=rested, via=via)
+        previous, finished, rested_odo_km=rested, via=via, arrival_tail_km=tail)
     trips.append(finished)
     return bool(paid)
 
@@ -5135,9 +5152,9 @@ def _promote_shadow_charges(session: Session, apply: bool = False,
             location=loc_label,
             charger_profile=charger_profile,
             cost=round(pricing_prefs.payable_kwh(
-                kwh, "DC" if fast else "AC", settings) * rate, 2),
+                kwh, "DC" if fast else "AC", settings, session=session) * rate, 2),
             payable_kwh=round(pricing_prefs.payable_kwh(
-                kwh, "DC" if fast else "AC", settings), 3),
+                kwh, "DC" if fast else "AC", settings, session=session), 3),
             price_source=source,
             # Same rule the polled path uses: a zero rate is a free session,
             # not a paid one that happened to cost nothing. The charging
@@ -5151,7 +5168,10 @@ def _promote_shadow_charges(session: Session, apply: bool = False,
             source="telemetry",
             shadow_start_ts=float(int(float(c["start_ts"]))),
             energy_source=energy_source,
-            charger_network=str(c.get("network") or "")[:16],
+            charger_network=(
+                (str(c.get("network") or "") in (("", "CCS") if fast else ("", "Tesla"))
+                 and pricing_prefs.place_network(session, loc_label, "DC" if fast else "AC"))
+                or str(c.get("network") or ""))[:16],
         )
         session.add(row)
         # Usable capacity is fitted from charges, so a session that only the
@@ -6389,7 +6409,8 @@ def add_manual_charge(payload: dict = Body(...), session: Session = Depends(get_
             session, settings, location, charge_type == "DC", start_time, max_power_kw)
         if charger_profile and (max_power_kw or 0.0) > pricing_prefs.CONDO_DC_MIN_KW:
             charge_type = "DC"   # too fast for AC: the condo's DC charger
-        payable = pricing_prefs.payable_kwh(energy_added_kwh, charge_type, settings)
+        payable = pricing_prefs.payable_kwh(energy_added_kwh, charge_type, settings,
+                                            session=session)
         cost = round(payable * rate, 2)
 
     vehicle = _first_vehicle(session)
@@ -6453,11 +6474,13 @@ def edit_charge_rate(payload: dict = Body(...), session: Session = Depends(get_s
         charge.billed_kwh = billed
     elif payload.get("billed_kwh") == "":
         charge.billed_kwh = 0.0
+    if charge.charge_type == "DC" and "billed_kwh" in payload:
+        session.flush()
+        pricing_prefs.learn_dc_loss(session)
     settings = get_settings()
     pk = pricing_prefs.payable_kwh(charge.energy_added_kwh, charge.charge_type,
-                                   settings, charge.billed_kwh or 0.0)
-    # Only recorded where it differs from the car's figure, so a DC session
-    # without a receipt stays priced on energy_added_kwh as before.
+                                   settings, charge.billed_kwh or 0.0, session=session)
+    # Only recorded where it differs from the car's figure.
     charge.payable_kwh = round(pk, 3) if abs(pk - (charge.energy_added_kwh or 0.0)) > 1e-6 else 0.0
     charge.cost = round(pk * rate, 2)
     charge.is_free = rate == 0
@@ -7707,6 +7730,8 @@ def repair_trip_boundary(
             # what end_est_km means, but now checked against the car itself.
             closed.end_est_km = round(boundary_odo_km - seen, 3) or None
             closed.end_est_verified = True
+        # Or the next promotion sweep puts the streamed boundary back.
+        closed.hand_repaired = opened.hand_repaired = True
         session.commit()
     return {"applied": apply, **plan}
 
@@ -9435,6 +9460,9 @@ def set_charge_billed(
                  f"{pack / kwh * 100:.0f}% efficient — that receipt is not this "
                  f"session.")
     charge.billed_kwh = kwh
+    if charge.charge_type == "DC":
+        session.flush()
+        pricing_prefs.learn_dc_loss(session)
     if paid is not None:
         charge.cost = round(paid, 2)
         charge.is_free = paid == 0
@@ -12682,6 +12710,196 @@ def repair_trip_after_charge(
     return plan
 
 
+@router.api_route("/repair-arrival-short", methods=["GET", "POST"])
+def repair_arrival_short(
+    drive_id: int = Query(...),
+    true_distance_km: float = Query(..., allow_inf_nan=False),
+    apply: bool = Query(False),
+    session: Session = Depends(get_session),
+):
+    """Give a trip the last stretch the car drove after its final odometer
+    report, from the car's own trip meter.
+
+    2 November, #3305: the car's Current Drive read 7.0 km, the trip 6.68,
+    because the signal went on the way into the car park: the shift to P
+    arrived, the last odometer did not. Sync now marks such an end as
+    unconfirmed and pays it back from the next trip's first reading; this
+    does it from the car's figure, which is exact, and at once. The end
+    odometer moves to start + ``true_distance_km``, and the energy grows at
+    the trip's own rate (at least ARRIVAL_CRAWL_WH_PER_KM, the gate and the
+    ramps). The staged copy moves too, so the next trip's departure is
+    measured from the new end. Dry run by default.
+    """
+    drive = session.get(Drive, drive_id)
+    if drive is None:
+        raise HTTPException(404, "No such trip.")
+    if drive.start_odo_km is None or drive.end_odo_km is None:
+        raise HTTPException(409, f"Trip {drive_id} has no odometer readings.")
+    new_end = round(drive.start_odo_km + true_distance_km, 3)
+    ext = round(new_end - drive.end_odo_km, 3)
+    if ext <= 0.05:
+        raise HTTPException(
+            409, f"Trip {drive_id} already reads {drive.distance_km} km against "
+                 f"the car's {true_distance_km}: nothing to add.")
+    if ext > sync_mod.SHADOW_TAIL_MAX_KM:
+        raise HTTPException(
+            409, f"That adds {ext} km, more than an arrival "
+                 f"({sync_mod.SHADOW_TAIL_MAX_KM} km). Check the figure.")
+    nxt = session.scalars(
+        select(Drive).where(Drive.vehicle_id == drive.vehicle_id,
+                            Drive.start_time > drive.start_time)
+        .order_by(Drive.start_time).limit(1)).first()
+    if nxt is not None and nxt.start_odo_km is not None and nxt.start_odo_km < new_end - 0.002:
+        raise HTTPException(
+            409, f"Trip {nxt.id} starts at {nxt.start_odo_km}, before the new "
+                 f"end {new_end}. Use /api/repair-trip-boundary for the two.")
+    rate = max(float(drive.wh_per_km or 0.0), sync_mod.ARRIVAL_CRAWL_WH_PER_KM)
+    gained = round(ext * rate / 1000.0, 3)
+    new_energy = (round(drive.energy_used_kwh + gained, 3)
+                  if drive.energy_used_kwh and drive.energy_used_kwh > 0 else drive.energy_used_kwh)
+    plan = {"drive_id": drive.id,
+            "end_odo_km": [drive.end_odo_km, new_end],
+            "distance_km": [drive.distance_km, round(true_distance_km, 1)],
+            "energy_kwh": [drive.energy_used_kwh, new_energy],
+            "added_km": ext, "added_kwh": gained, "applied": apply}
+    if apply:
+        drive.end_odo_km = new_end
+        drive.distance_km = round(true_distance_km, 1)
+        drive.energy_used_kwh = new_energy
+        drive.recovered_km = round(float(drive.recovered_km or 0.0) + ext, 3)
+        drive.recovered_kwh = round(float(drive.recovered_kwh or 0.0) + gained, 3)
+        drive.recovered_via = "car"
+        drive.recovered_at = sync_mod.now_local().isoformat(timespec="seconds")
+        if drive.duration_min:
+            drive.avg_speed_kmh = round(drive.distance_km / (drive.duration_min / 60.0), 1)
+        drive.hand_repaired = True
+        try:
+            trips = _json_mod.loads(state.get(session, state.TELEMETRY_TRIPS_KEY) or "[]") or []
+        except ValueError:
+            trips = []
+        start_ts = float(drive.shadow_start_ts or 0.0)
+        for t in trips:
+            if start_ts and abs(float(t.get("start_ts") or 0.0) - start_ts) <= 2.0:
+                t["end_odo_km"] = new_end
+                t["distance_km"] = round(new_end - float(t.get("start_odo_km") or drive.start_odo_km), 3)
+                if t.get("energy_kwh") is not None and float(t["energy_kwh"]) > 0:
+                    t["energy_kwh"] = round(float(t["energy_kwh"]) + gained, 3)
+                t["recovered_km"] = round(float(t.get("recovered_km") or 0.0) + ext, 3)
+                t["recovered_via"] = "car"
+                t.pop("end_odo_unconfirmed", None)
+                plan["staged"] = True
+        if plan.get("staged"):
+            _put_trips(session, trips)
+        session.commit()
+    return plan
+
+
+@router.api_route("/set-charger-network", methods=["GET", "POST"])
+def set_charger_network(
+    charge_id: int = Query(...),
+    network: str = Query(..., max_length=16),
+    remember: bool = Query(True),
+    reprice_public: bool = Query(False),
+    apply: bool = Query(False),
+    session: Session = Depends(get_session),
+):
+    """Say which network a charge's charger belongs to, and remember it for
+    the place.
+
+    The car reports only the plug type, and a CCS2 car at a Tesla
+    Supercharger reports CCS like any other CCS charger (2 November, charge
+    103 at QBM). ``network`` is Tesla, CCS, CHAdeMO, GB, or empty to clear.
+    With ``remember`` (the default), later DC sessions at the same place that
+    the car reports as CCS take this label. On AC, ``TDC`` marks a Tesla
+    Destination Charger, remembered for the place's AC sessions the same way.
+    ``reprice_public`` prices the
+    session at the Public rate for its type, for one priced as Home or Office
+    because it was within their radius. Dry run by default.
+    """
+    c = session.get(Charge, charge_id)
+    if c is None:
+        raise HTTPException(404, "No such charge.")
+    kind = "DC" if c.charge_type == "DC" else "AC"
+    allowed = ({"tesla": "Tesla", "ccs": "CCS", "chademo": "CHAdeMO", "gb": "GB", "": ""}
+               if kind == "DC" else {"tdc": "TDC", "": ""})
+    label = allowed.get(network.strip().lower())
+    if label is None:
+        raise HTTPException(
+            422, "network must be Tesla, CCS, CHAdeMO, GB, or empty for a DC charge."
+            if kind == "DC" else "network must be TDC or empty for an AC charge.")
+    settings = get_settings()
+    plan = {"charge_id": c.id, "location": c.location,
+            "charger_network": [c.charger_network or "", label],
+            "remembered_for": c.location if remember and c.location else None,
+            "applied": apply}
+    new_cost = None
+    if reprice_public:
+        rate = pricing_prefs.rate_for_source(session, settings, "public",
+                                             c.charge_type == "DC", c.start_time)
+        payable = pricing_prefs.payable_kwh(c.energy_added_kwh or 0.0, c.charge_type,
+                                            settings, c.billed_kwh or 0.0,
+                                            session=session)
+        new_cost = round(payable * rate, 2)
+        plan["price_source"] = [c.price_source, "public"]
+        plan["cost"] = [c.cost, new_cost]
+    if apply:
+        c.charger_network = label
+        if remember and c.location:
+            pricing_prefs.remember_place_network(session, c.location, label, kind)
+        if new_cost is not None:
+            c.price_source, c.cost = "public", new_cost
+        session.commit()
+    return plan
+
+
+@router.api_route("/reprice-dc-loss", methods=["GET", "POST"])
+def reprice_dc_loss(
+    apply: bool = Query(False),
+    session: Session = Depends(get_session),
+):
+    """Price past DC sessions on what the charger delivered, not what reached
+    the pack.
+
+    A DC charger bills at the stall, and a few percent never reaches the
+    battery (the QBM Supercharger, 2 November: 26.94 kWh billed, 24.56 into
+    the pack). Sessions without a receipt were priced on the pack figure.
+    This re-prices each paid DC session without a receipt at its own rate
+    (cost over the kWh it was priced on, so a hand-set rate stays) on the
+    pack figure plus the loss measured from DC receipts. Dry run by default.
+    """
+    loss = pricing_prefs.dc_loss_pct(session)
+    if loss <= 0:
+        raise HTTPException(
+            409, "No DC loss measured yet. Enter the billed kWh from one DC "
+                 "receipt (✎ on the charge) first.")
+    settings = get_settings()
+    rows = session.scalars(
+        select(Charge).where(Charge.charge_type == "DC").order_by(Charge.start_time)).all()
+    plan, total = [], 0.0
+    for c in rows:
+        if c.is_free or (c.billed_kwh or 0) > 0 or not c.cost or not c.energy_added_kwh:
+            continue
+        old_payable = float(c.payable_kwh or 0.0) or float(c.energy_added_kwh)
+        new_payable = pricing_prefs.payable_kwh(c.energy_added_kwh, "DC", settings,
+                                                session=session)
+        if abs(new_payable - old_payable) < 0.005:
+            continue
+        rate = float(c.cost) / old_payable
+        new_cost = round(rate * new_payable, 2)
+        total += new_cost - float(c.cost)
+        plan.append({"charge_id": c.id, "start": c.start_time.isoformat(timespec="minutes"),
+                     "location": c.location, "rate": round(rate, 3),
+                     "kwh_priced": [round(old_payable, 3), round(new_payable, 3)],
+                     "cost": [c.cost, new_cost]})
+        if apply:
+            c.payable_kwh = round(new_payable, 3)
+            c.cost = new_cost
+    if apply:
+        session.commit()
+    return {"dc_loss_pct": loss, "sessions": len(plan), "added_cost": round(total, 2),
+            "applied": apply, "charges": plan}
+
+
 @router.api_route("/repair-charge-types", methods=["GET", "POST"])
 def repair_charge_types(
     apply: bool = Query(False),
@@ -12716,7 +12934,8 @@ def repair_charge_types(
         if not (avg > sync_mod.AC_MAX_KW or peak > sync_mod.AC_MAX_PEAK_KW):
             continue
         keep_cost = bool(c.is_free) or (c.price_source or "") == "custom"
-        new_payable = pricing_prefs.payable_kwh(kwh, "DC", settings, c.billed_kwh or 0.0)
+        new_payable = pricing_prefs.payable_kwh(kwh, "DC", settings, c.billed_kwh or 0.0,
+                                                session=session)
         new_cost = c.cost
         if not keep_cost:
             source = (c.price_source or "") or pricing_prefs.get_default_source(session)
