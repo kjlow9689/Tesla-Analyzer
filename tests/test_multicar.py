@@ -5070,3 +5070,68 @@ def test_a_streamed_charge_measures_the_pack_on_the_car_s_own_two_gauges():
                 s.commit()
     finally:
         settings.app_passcode = old
+
+
+def test_repair_trip_after_charge_starts_the_drive_when_the_charge_ended():
+    """2 November, #3292: opened at 12:01 as the car rolled into a bay, ran
+    through charge #102 (to 12:09) and only then drove 3.5 km, with no energy.
+    The repair moves the start to the charge's end and fills the energy,
+    flagged as estimated."""
+    from app.models import Charge, Drive
+
+    settings = get_settings()
+    old = settings.app_passcode
+    settings.app_passcode = ""
+    try:
+        with TestClient(app) as client:
+            with SessionLocal() as s:
+                d = s.query(Drive).order_by(Drive.id.desc()).first()
+                c = s.query(Charge).filter(Charge.vehicle_id == d.vehicle_id).first()
+                c.start_time = d.start_time + timedelta(minutes=1)
+                c.end_time = d.start_time + timedelta(minutes=8)
+                c.end_soc = 81.0
+                d.end_time = d.start_time + timedelta(minutes=20)
+                d.distance_km, d.energy_used_kwh, d.duration_min = 3.5, -3.015, 20.0
+                s.commit()
+                did, cid, cend = d.id, c.id, c.end_time
+
+            r = client.get("/api/repair-trip-after-charge", params={"drive_id": did})
+            body = r.json()
+            assert r.status_code == 200, body
+            assert body["charge_id"] == cid and body["applied"] is False
+            assert body["duration_min"][1] == 12.0
+            assert body["energy_estimated"] is True
+            assert 0.3 < body["energy_kwh"][1] < 1.2
+
+            r = client.get("/api/repair-trip-after-charge",
+                           params={"drive_id": did, "true_wh_per_km": 200, "apply": "true"})
+            assert r.json()["energy_kwh"][1] == 0.7
+            with SessionLocal() as s:
+                d = s.get(Drive, did)
+                assert d.start_time == cend and d.duration_min == 12.0
+                assert d.start_soc == 81.0 and d.energy_used_kwh == 0.7
+                assert d.energy_estimated and d.hand_repaired
+
+            # A trip no charge ended inside is refused.
+            # A trip already moved but left with a negative energy can still
+            # have it filled, and is listed until it is.
+            with SessionLocal() as s:
+                s.get(Drive, did).energy_used_kwh = -3.015
+                s.commit()
+            listed = client.get("/api/negative-energy-trips").json()
+            assert listed["count"] == 1 and listed["kwh_missing_from_totals"] == 3.02
+            assert listed["trips"][0]["charge_id"] == cid
+            assert listed["trips"][0]["repair"] == f"/api/repair-trip-after-charge?drive_id={did}"
+            r = client.get("/api/repair-trip-after-charge",
+                           params={"drive_id": did, "true_wh_per_km": 183, "apply": "true"})
+            assert r.status_code == 200, r.json()
+            assert r.json()["energy_kwh"] == [-3.015, 0.64]
+            with SessionLocal() as s:
+                assert s.get(Drive, did).start_time == cend
+            assert client.get("/api/negative-energy-trips").json()["count"] == 0
+            again = client.get("/api/repair-trip-after-charge", params={"drive_id": did})
+            assert again.status_code == 409
+            assert "has been repaired" in again.json()["detail"]
+    finally:
+        settings.app_passcode = old
+        _reset_to_demo()

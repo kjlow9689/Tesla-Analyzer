@@ -4629,6 +4629,7 @@ def _promote_shadow_trips(session: Session, apply: bool = False,
     # below depends on it — an out-of-order trip would claim a drive from
     # under one that had a better right to it.
     trips = sorted(trips, key=lambda x: float(x.get("start_ts") or 0.0))
+    live_drives = _live_drives_flush()
 
     for t in trips:
         try:
@@ -4776,7 +4777,7 @@ def _promote_shadow_trips(session: Session, apply: bool = False,
             row.polled_km = row.distance_km
             row.polled_kwh = row.energy_used_kwh
         added = row.id is None
-        _apply_shadow_to_drive(row, t)
+        _apply_shadow_to_drive(row, t, _live_energy_for(t, live_drives))
         _geocode_shadow_drive(session, row, t)
         if not added and not session.is_modified(row, include_collections=False):
             # Re-promoting a row that was already correct. Reported as what it
@@ -5212,7 +5213,7 @@ def _geocode_shadow_drive(session: Session, row, t: dict) -> None:
         setattr(row, f"{end}_area", area or "")
 
 
-def _apply_shadow_to_drive(row, t: dict) -> None:
+def _apply_shadow_to_drive(row, t: dict, live_kwh: float | None = None) -> None:
     """Copy a streamed trip's figures onto a drive row.
 
     Only what telemetry actually measured. Tags, costs and every other field
@@ -5233,9 +5234,19 @@ def _apply_shadow_to_drive(row, t: dict) -> None:
     row.end_time = sync_mod._dt(t["end_ts"]).replace(microsecond=0)
     row.distance_km = float(t.get("distance_km") or 0.0)
     row.duration_min = float(t.get("duration_min") or 0.0)
-    if t.get("energy_kwh") is not None:
+    if live_kwh is not None:
+        # The same drive as Live summed it from the pack's power, which is
+        # what the car's trip meter does (see _live_finish).
+        row.energy_used_kwh = live_kwh
+        row.energy_estimated = False
+    elif t.get("energy_kwh") is not None and float(t["energy_kwh"]) >= 0:
         row.energy_used_kwh = float(t["energy_kwh"])
         row.energy_estimated = False
+    elif t.get("energy_kwh") is not None and row.energy_used_kwh is None:
+        # Negative: a charge inside the trip ran the meter backwards (#3292
+        # saved -3.015 kWh). Saved as missing, never as negative driving that
+        # would take kWh off every total it is summed into.
+        row.energy_used_kwh = 0.0
     # Measured on the stream, so the row can stop claiming its efficiency is
     # a speed-based estimate. idle_tracked is what the dashboard's data
     # quality badge reads, and until telemetry recorded a stop it was false
@@ -12522,6 +12533,155 @@ def set_trip_stop(
     return plan
 
 
+@router.get("/negative-energy-trips")
+def negative_energy_trips(session: Session = Depends(get_session)):
+    """List the trips saved with an energy below zero, each with the link that
+    repairs it.
+
+    A trip that ran through a charge measured the charge as negative driving
+    (#3292 saved -3.015 kWh) and took that much off every total. Read only.
+    """
+    rows = session.scalars(
+        select(Drive).where(Drive.energy_used_kwh < 0).order_by(Drive.start_time)).all()
+    out = []
+    for d in rows:
+        charge = session.scalars(
+            select(Charge).where(Charge.vehicle_id == d.vehicle_id,
+                                 Charge.end_time >= d.start_time,
+                                 Charge.end_time < d.end_time)
+            .order_by(Charge.end_time.desc()).limit(1)).first()
+        out.append({
+            "drive_id": d.id,
+            "start_time": d.start_time.isoformat(timespec="minutes"),
+            "end_time": d.end_time.isoformat(timespec="minutes"),
+            "distance_km": d.distance_km,
+            "energy_kwh": d.energy_used_kwh,
+            "charge_id": charge.id if charge else None,
+            "repair": (f"/api/repair-trip-after-charge?drive_id={d.id}" if charge
+                       else None),
+            "note": ("ran through charge #%d" % charge.id if charge else
+                     "no saved charge inside it; ask before repairing"),
+        })
+    return {"count": len(out),
+            "kwh_missing_from_totals": round(-sum(d.energy_used_kwh for d in rows), 2),
+            "trips": out}
+
+
+@router.api_route("/repair-trip-after-charge", methods=["GET", "POST"])
+def repair_trip_after_charge(
+    drive_id: int = Query(...),
+    true_wh_per_km: float | None = Query(None, allow_inf_nan=False),
+    apply: bool = Query(False),
+    session: Session = Depends(get_session),
+):
+    """Start a trip after the charge it was wrongly opened across.
+
+    A trip that opened as the car rolled into a charging bay, before the
+    stored path knew the cable was in, ran on through the whole session: 2
+    November, #3292 began at 12:01 though the car charged until 12:09 (charge
+    #102) and only then drove out. Sync now ends such a trip on the battery's
+    own rising energy (sync.CHARGE_PROVES_KWH); this puts a row already saved
+    right. The start moves to the charge's end and takes its SoC and place.
+
+    A trip like that often has no energy at all (the meter it starts from was
+    taken mid-charge). ``true_wh_per_km`` (the car's Current Drive or Since
+    Charge readout) fills it; without one the median rate of this car's recent
+    measured trips is used. Either way the trip is flagged energy_estimated,
+    which keeps it out of the accuracy figures. Dry run by default.
+    """
+    drive = session.get(Drive, drive_id)
+    if drive is None:
+        raise HTTPException(404, "No such trip.")
+    charge = session.scalars(
+        select(Charge).where(Charge.vehicle_id == drive.vehicle_id,
+                             Charge.end_time > drive.start_time,
+                             Charge.end_time < drive.end_time)
+        .order_by(Charge.end_time.desc()).limit(1)).first()
+    if charge is None:
+        done = session.scalars(
+            select(Charge).where(Charge.vehicle_id == drive.vehicle_id,
+                                 Charge.end_time == drive.start_time).limit(1)).first()
+        if done is not None and not (drive.energy_used_kwh and drive.energy_used_kwh > 0):
+            charge = done       # start already moved; the energy still needs filling
+        elif done is not None and getattr(drive, "hand_repaired", False):
+            raise HTTPException(
+                409, f"Trip {drive_id} already starts at "
+                     f"{drive.start_time.isoformat(timespec='minutes')}, when "
+                     f"charge {done.id} ended: it has been repaired. Energy "
+                     f"{drive.energy_used_kwh} kWh.")
+    if charge is None:
+        near = session.scalars(
+            select(Charge).where(Charge.end_time >= drive.start_time - timedelta(hours=3),
+                                 Charge.start_time <= drive.end_time + timedelta(hours=3))
+            .order_by(Charge.end_time)).all()
+        seen = "; ".join(
+            f"#{c.id} {c.start_time.isoformat(timespec='minutes')}-"
+            f"{c.end_time.isoformat(timespec='minutes')} (vehicle {c.vehicle_id})"
+            for c in near) or "none within 3 hours"
+        raise HTTPException(
+            409, f"No charge ended inside trip {drive_id} "
+                 f"({drive.start_time.isoformat(timespec='minutes')}-"
+                 f"{drive.end_time.isoformat(timespec='minutes')}, vehicle "
+                 f"{drive.vehicle_id}). Charges nearby: {seen}.")
+    energy = drive.energy_used_kwh
+    estimated = bool(getattr(drive, "energy_estimated", False))
+    source = "kept"
+    # Measured across a charge the meter runs backwards: #3292 saved -3.015
+    # kWh, the 8 minutes of charging counted as negative driving.
+    if not (energy and energy > 0):
+        if true_wh_per_km is not None:
+            rate, source = true_wh_per_km, "car"
+        else:
+            recent = session.scalars(
+                select(Drive).where(Drive.vehicle_id == drive.vehicle_id,
+                                    Drive.id != drive.id,
+                                    Drive.distance_km >= 2.0,
+                                    Drive.energy_used_kwh > 0)
+                .order_by(Drive.start_time.desc()).limit(40)).all()
+            rates = sorted(d.energy_used_kwh * 1000.0 / d.distance_km for d in recent
+                           if not getattr(d, "energy_estimated", False))
+            if not rates:
+                raise HTTPException(
+                    409, "No measured trips to take a rate from. Give "
+                         "'true_wh_per_km'.")
+            rate, source = rates[len(rates) // 2], "median of recent trips"
+        if not (sync_mod.MIN_PLAUSIBLE_WH_PER_KM <= rate <= sync_mod.MAX_PLAUSIBLE_WH_PER_KM):
+            raise HTTPException(
+                409, f"{rate:.0f} Wh/km is outside the plausible "
+                     f"{sync_mod.MIN_PLAUSIBLE_WH_PER_KM:.0f}-"
+                     f"{sync_mod.MAX_PLAUSIBLE_WH_PER_KM:.0f} range.")
+        energy, estimated = round(rate * (drive.distance_km or 0.0) / 1000.0, 2), True
+    new_start = charge.end_time
+    new_duration = round((drive.end_time - new_start).total_seconds() / 60.0, 1)
+    plan = {
+        "drive_id": drive.id,
+        "charge_id": charge.id,
+        "start_time": [drive.start_time.isoformat(timespec="minutes"),
+                       new_start.isoformat(timespec="minutes")],
+        "duration_min": [drive.duration_min, new_duration],
+        "start_soc": [drive.start_soc, charge.end_soc],
+        "start_location": [drive.start_location, charge.location or drive.start_location],
+        "energy_kwh": [drive.energy_used_kwh, energy],
+        "energy_source": source,
+        "energy_estimated": estimated,
+        "applied": apply,
+    }
+    if apply:
+        drive.start_time = new_start
+        drive.duration_min = new_duration
+        if new_duration > 0:
+            drive.avg_speed_kmh = round((drive.distance_km or 0.0) / (new_duration / 60.0), 1)
+        if charge.end_soc:
+            drive.start_soc = charge.end_soc
+        if charge.location and not drive.start_location:
+            drive.start_location = charge.location
+        drive.energy_used_kwh = energy
+        drive.energy_estimated = estimated
+        drive.hand_repaired = True
+        session.commit()
+    return plan
+
+
 @router.api_route("/repair-charge-types", methods=["GET", "POST"])
 def repair_charge_types(
     apply: bool = Query(False),
@@ -15582,6 +15742,101 @@ def _live_clean(key: str, value):
 
 
 _LIVE_SIGN_SEEN: dict[str, int] = {}     # vin -> the sign restored or saved this process
+# Finished Live drives waiting to be saved (see _live_finish). Appended under
+# _LIVE_LOCK and written by the stored path, never by the Live path.
+_LIVE_DONE: list[dict] = []
+LIVE_DONE_KEEP_DAYS = 14
+LIVE_ENERGY_MIN_COVER = 0.8      # share of the drive's seconds summed from power
+LIVE_ENERGY_ODO_TOL_KM = 0.15    # both ends must meet the saved trip this closely
+LIVE_ENERGY_AGREE_KWH = 0.2      # and Live must agree with the stored figure within
+LIVE_ENERGY_AGREE_FRAC = 0.15    # the larger of these
+
+
+def _live_finish(vin: str, car: dict, go: dict | None) -> None:
+    """Queue a finished Live drive's power-summed energy (caller holds the lock).
+
+    Live adds up the pack's power second by second, the way the car's own
+    trip meter does, and on 2 November matched the car within 1%. The saved
+    trip is the difference of two EnergyRemaining readings, which step and
+    lag, and read about 0.03 kWh high per trip (29 of 41 above the car). The
+    saved trip takes this figure when it is the same drive (see
+    _live_energy_for). Nothing here touches the database.
+    """
+    if not go or go.get("e_int") is None or go.get("odo_km") is None:
+        return
+    end = go.get("_end") if car.get("_stop") is not None else None
+    if end is None:
+        tick = go.get("_od")
+        if not tick:
+            return
+        end = {"ts": float(car.get("_t") or 0.0), "odo_km": tick[0], "e": tick[1],
+               "secs": float(go.get("e_secs") or 0.0)}
+    try:
+        span = float(end["ts"]) - float(go["ts"])
+        rec = {"vin": vin, "start_ts": round(float(go["ts"]), 1),
+               "end_ts": round(float(end["ts"]), 1),
+               "start_odo": round(float(go["odo_km"]), 3),
+               "end_odo": round(float(end["odo_km"]), 3),
+               "kwh": round(float(end["e"]), 3),
+               "cover": round(min(float(end["secs"]) / span, 1.0), 3) if span > 0 else 0.0}
+    except (KeyError, TypeError, ValueError):
+        return
+    if rec["end_odo"] - rec["start_odo"] > 0.05 and not go.get("_realigned"):
+        _LIVE_DONE.append(rec)
+
+
+def _live_drives_flush() -> list[dict]:
+    """Save the queued Live drives and return every one on record. Own
+    session, so a dry run of the caller does not lose them. Never raises."""
+    with _LIVE_LOCK:
+        pending = _LIVE_DONE[:]
+        _LIVE_DONE.clear()
+    from ..database import SessionLocal
+    try:
+        with SessionLocal() as s:
+            try:
+                saved = _json_mod.loads(state.get(s, state.TELEMETRY_LIVE_DRIVES_KEY) or "[]") or []
+            except ValueError:
+                saved = []
+            if pending:
+                cut = time.time() - LIVE_DONE_KEEP_DAYS * 86400
+                saved = [r for r in saved if isinstance(r, dict)
+                         and float(r.get("end_ts") or 0) >= cut] + pending
+                state.put(s, state.TELEMETRY_LIVE_DRIVES_KEY, _json_mod.dumps(saved))
+                s.commit()
+            return saved
+    except Exception:   # noqa: BLE001 - the saved trip keeps its stored figure
+        with _LIVE_LOCK:
+            _LIVE_DONE[:0] = pending
+        return []
+
+
+def _live_energy_for(t: dict, live: list[dict]) -> float | None:
+    """Live's energy for a streamed trip, when Live tracked the same drive:
+    same car, both odometer ends within LIVE_ENERGY_ODO_TOL_KM, power summed
+    over most of it, and agreeing with the stored figure closely enough that
+    a disagreement cannot be a different drive or a gap in the power."""
+    try:
+        e_stored = float(t["energy_kwh"])
+        s0, s1 = float(t["start_odo_km"]), float(t["end_odo_km"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if e_stored <= 0 or s1 - s0 <= 0.05:
+        return None
+    for r in live:
+        try:
+            if (r.get("vin") != t.get("vin")
+                    or abs(float(r["start_odo"]) - s0) > LIVE_ENERGY_ODO_TOL_KM
+                    or abs(float(r["end_odo"]) - s1) > LIVE_ENERGY_ODO_TOL_KM
+                    or float(r.get("cover") or 0.0) < LIVE_ENERGY_MIN_COVER):
+                continue
+            kwh = float(r["kwh"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if kwh > 0 and abs(kwh - e_stored) <= max(LIVE_ENERGY_AGREE_KWH,
+                                                   LIVE_ENERGY_AGREE_FRAC * e_stored):
+            return round(kwh, 3)
+    return None
 
 
 def _live_sign_restore(vin: str) -> None:
@@ -15701,7 +15956,8 @@ def _live_align_to_shadows(shadows: dict) -> None:
                     stored_max = float(shadow.get("max_speed_kmh") or 0.0)
                     car["_go"] = {**{k: opened.get(k) for k in _LIVE_KEYS},
                                   "ts": o_ts,
-                                  "max_speed": max(float(go.get("max_speed") or 0.0), stored_max)}
+                                  "max_speed": max(float(go.get("max_speed") or 0.0), stored_max),
+                                  "_realigned": True}
                     car.pop("_stop", None)
                     print(f"[live] {vin[-6:]} drive realigned to the stored trip: "
                           f"live began {time.time() - g_ts:.0f}s ago, stored trip {time.time() - o_ts:.0f}s ago",
@@ -15709,6 +15965,7 @@ def _live_align_to_shadows(shadows: dict) -> None:
             elif car.get("_stop") is not None:
                 # No stored trip open and the car is standing in Park: the
                 # journey is over, whatever the live wait timer says.
+                _live_finish(vin, car, go)
                 car.pop("_go", None)
                 car.pop("_stop", None)
                 print(f"[live] {vin[-6:]} drive closed: the stored trip has ended", flush=True)
@@ -15796,6 +16053,7 @@ def _live_mem_fold_locked(vin: str, created_at, fields: dict) -> None:
         # stopped. Without this a car that powered down with no closing
         # reading stitched every later drive of the day onto it: 22 km and
         # 329 min on the page against the car's own 4.5 km and 19 min.
+        _live_finish(vin, car, go)
         car.pop("_go", None)
         car.pop("_stop", None)
         car["_park"] = {k: snap.get(k) for k in _LIVE_KEYS}
@@ -15823,6 +16081,9 @@ def _live_mem_fold_locked(vin: str, created_at, fields: dict) -> None:
             # The driver left the car during that stop, so this is a new
             # drive, as the car's own Current Drive counts it (1 November: the
             # car reset after a few minutes out; the page ran on for 34 min).
+            car["_stop"] = stopped_at
+            _live_finish(vin, car, go)
+            car.pop("_stop", None)
             base = car.get("_stopsnap") or {k: snap.get(k) for k in _LIVE_KEYS}
             car["_go"] = {**base, "ts": stamp, "max_speed": speed, "_split": True}
             car.pop("_lastgap", None)
@@ -15847,10 +16108,16 @@ def _live_mem_fold_locked(vin: str, created_at, fields: dict) -> None:
     else:
         if go is not None:
             stop = car.setdefault("_stop", stamp)
+            if stop == stamp and go.get("e_int") is not None and snap.get("odo_km") is not None:
+                # Where the drive stood when it stopped, for _live_finish: the
+                # wait that follows is not this drive's if it ends here.
+                go["_end"] = {"ts": stamp, "odo_km": snap["odo_km"], "e": go["e_int"],
+                              "secs": float(go.get("e_secs") or 0.0)}
             # Where a drive restarting from this stop begins: the last reading
             # while standing, the same as a parked car's would-be start.
             car["_stopsnap"] = {k: snap.get(k) for k in _LIVE_KEYS}
             if stamp - stop > LIVE_TRIP_PARK_END_SEC:
+                _live_finish(vin, car, go)
                 car.pop("_go", None)
                 car.pop("_stop", None)
         if "_go" not in car:
@@ -15870,6 +16137,7 @@ def _live_mem_fold_locked(vin: str, created_at, fields: dict) -> None:
             go["e_int"] = max(float(e0) - float(e1), 0.0) if e0 is not None and e1 is not None else 0.0
         if last and 0.0 < stamp - last[0] <= 10.0:
             go["e_int"] = float(go.get("e_int") or 0.0) + last[1] * (stamp - last[0]) / 3600.0
+            go["e_secs"] = float(go.get("e_secs") or 0.0) + (stamp - last[0])
             if last[1] < 0:
                 # Regen on its own as well: the energy braking put back.
                 go["e_regen"] = float(go.get("e_regen") or 0.0) - last[1] * (stamp - last[0]) / 3600.0
