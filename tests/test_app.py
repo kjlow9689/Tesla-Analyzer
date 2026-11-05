@@ -14027,3 +14027,50 @@ def test_per_trip_wh_per_km_is_calibrated_to_the_car_once_readings_agree():
             assert client.get("/api/whkm-calibration").json()["applied"] is False
     finally:
         settings.app_passcode = old
+
+
+def test_live_bridges_a_gap_in_the_power_readings():
+    """5 November, #3317: with the signal weak, gaps in the power readings
+    were skipped and Live read 98.8 Wh/km against the car's 113.7. A gap is
+    now bridged by the pack's own reading, less what power already counted."""
+    from datetime import datetime as _dtm, timedelta as _td, timezone as _tz
+
+    from app.api import routes as routes_mod
+
+    vin = "LIVEGAP000000001"
+    t0 = _dtm.now(_tz.utc) - _td(seconds=400)
+    at = lambda d: (t0 + _td(seconds=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mi = 1.609344
+    routes_mod._LIVE_MEM.pop(vin, None)
+    E = lambda d: 60.0 - d * 9.0 / 3600.0          # 9 kW, all the way
+    routes_mod._live_mem_fold(vin, at(0), {"Gear": "ShiftStateP", "VehicleSpeed": 0.0,
+                                           "Odometer": 100.0 / mi, "EnergyRemaining": E(0)})
+    for d in list(range(1, 61)) + list(range(101, 161)):   # 61-100: no signal
+        f = {"Gear": "ShiftStateD", "VehicleSpeed": 40.0 / mi, "Odometer": (100.0 + d * 0.011) / mi,
+             "PackVoltage": 360.0, "PackCurrent": -25.0}
+        if d % 10 == 0 or d == 101:
+            f["EnergyRemaining"] = round(E(d), 2)       # the pack's 0.01 kWh steps
+        routes_mod._live_mem_fold(vin, at(d), f)
+    go = routes_mod._LIVE_MEM[vin]["_go"]
+    # 159 s at 9 kW: 0.3975 kWh. Without the bridge it was 40 s short (0.2975).
+    assert go["e_int"] == pytest.approx(0.3975, abs=0.012)
+    routes_mod._LIVE_MEM.pop(vin, None)
+
+
+def test_a_dry_run_promotion_leaves_the_live_queue_for_the_real_one():
+    """The health check runs a dry-run promotion every few minutes. Emptying
+    Live's finished-drive queue there consumed the signal that makes the
+    ingest promote at once, and the trip waited for the six-hourly sweep."""
+    from app.api import routes as routes_mod
+    from app.database import SessionLocal
+
+    rec = {"vin": "Q", "start_ts": 1.0, "end_ts": 2.0, "start_odo": 1.0, "end_odo": 2.0,
+           "kwh": 0.2, "cover": 1.0}
+    with TestClient(app):
+        with SessionLocal() as s:
+            routes_mod._LIVE_DONE.append(rec)
+            routes_mod._promote_shadow_trips(s, apply=False)
+            assert routes_mod._LIVE_DONE == [rec]          # read, not consumed
+            routes_mod._promote_shadow_trips(s, apply=True)
+            assert routes_mod._LIVE_DONE == []             # saved by the real one
+            assert rec in routes_mod._live_drives_flush(write=False)
