@@ -15278,7 +15278,12 @@ def telemetry_config(session: Session = Depends(get_session)):
         # anything that has not changed since the configuration landed — a
         # lifetime charge counter on a car that has not charged, a DC power
         # reading on a car that has not supercharged.
-        "configured_but_quiet": sorted(f for f in fields if f not in arrived),
+        "configured_but_quiet": sorted(f for f in fields if f not in arrived and f not in LIVE_ONLY_FIELDS),
+        # Live-only fields are never stored, so only this process's memory can
+        # show them, and the car sends most of them only on a change (the
+        # route when it changes, the heading when the car turns). Not seen
+        # since the last restart is ordinary for a parked car.
+        "live_only_not_seen_since_restart": sorted(f for f in fields if f not in arrived and f in LIVE_ONLY_FIELDS),
         # Arriving without being configured. Should be empty; anything here
         # means this endpoint and the stream disagree about what the car has.
         "arriving_unconfigured": sorted(f for f in arrived if f not in fields),
@@ -16436,6 +16441,8 @@ def _live_mem_fold_locked(vin: str, created_at, fields: dict) -> None:
             # Invalid: for the navigation fields, the route has ended.
             if k in _LIVE_NAV_KEYS and k in car:
                 car.pop(k, None)
+                if k == "RouteLine":
+                    car.pop("_route_v", None)
                 if ts:
                     kt[k] = ts
             continue
@@ -16456,9 +16463,15 @@ def _live_mem_fold_locked(vin: str, created_at, fields: dict) -> None:
             # The odometer when the car last said how far is left: the km to
             # go then counts down with the odometer between its updates
             # (the car sends them every 10 s at best).
-            odo = fields.get("Odometer", car.get("Odometer"))
+            odo = fields.get("Odometer")
+            if odo is None:
+                odo = car.get("Odometer")
             car["_nav_odo"] = float(odo) if odo is not None else None
         car[k] = v
+        if k == "RouteLine":
+            # Its tag, kept here so the page's answer never has to copy or
+            # hash the route itself (tens of kB on a long trip) every second.
+            car["_route_v"] = navroute.route_version(v)
         if ts:
             kt[k] = ts
     car["_seen"] = time.time()
@@ -16680,7 +16693,8 @@ def _live_payload(vin: str | None, capacity_kwh: float | None) -> dict:
     # one second, power still from the one before) or fail the whole frame,
     # which the page then shows as "not driving" for a moment.
     with _LIVE_LOCK:
-        car = copy.deepcopy(_LIVE_MEM.get(vin)) if vin else None
+        mem = _LIVE_MEM.get(vin) if vin else None
+        car = copy.deepcopy({k: v for k, v in mem.items() if k != "RouteLine"}) if mem else None
     ts = _telemetry_ts(car.get("_ts")) if car else None
     if not car or not ts:
         return {"driving": False, "vin": vin, "trip": None, "now": None,
@@ -16786,7 +16800,8 @@ def _live_nav(car: dict) -> dict | None:
     to go, the battery % the car expects on arrival, and a tag for the route
     (the points themselves come from /api/live/route, only when it changes)."""
     kt = car.get("_kt") or {}
-    have = [k for k in _LIVE_NAV_KEYS if car.get(k) is not None]
+    have = [k for k in _LIVE_NAV_KEYS if car.get(k) is not None
+            or (k == "RouteLine" and car.get("_route_v"))]
     if not have:
         return None
     newest = max(float(kt.get(k) or 0.0) for k in have)
@@ -16811,8 +16826,13 @@ def _live_nav(car: dict) -> dict | None:
                        if car.get("ExpectedEnergyPercentAtTripArrival") is not None else None),
         "delay_min": (round(float(car["RouteTrafficMinutesDelay"]), 1)
                       if car.get("RouteTrafficMinutesDelay") is not None else None),
-        "route_v": navroute.route_version(car.get("RouteLine")),
+        "route_v": car.get("_route_v") or navroute.route_version(car.get("RouteLine")),
     }
+    # Arrived: the car normally ends the route itself, but one that goes to
+    # sleep first leaves it standing. In Park within 200 m of the end, it is over.
+    if (nav["km"] is not None and nav["km"] <= 0.2
+            and (car.get("Gear") or "") in ("ShiftStateP", "P")):
+        return None
     # Navigation with nothing to show (only a stray origin, say) is none.
     if nav["dest_lat"] is None and nav["minutes"] is None and nav["km"] is None and not nav["route_v"]:
         return None
@@ -16820,6 +16840,7 @@ def _live_nav(car: dict) -> dict | None:
 
 
 _ROUTE_CACHE: dict[str, tuple] = {}
+ROUTE_NEAR_CAR_KM = 20.0
 
 
 @router.get("/live/route")
@@ -16830,6 +16851,8 @@ def live_route(vin: str | None = Query(None)):
     with _LIVE_LOCK:
         car = (_LIVE_MEM.get(target) or {}) if target else {}
         raw = car.get("RouteLine")
+        loc = car.get("Location")
+        loc_t = float((car.get("_kt") or {}).get("Location") or 0.0)
     v = navroute.route_version(raw)
     if not v:
         # Why there is no line: the car has sent no route (none set, or the
@@ -16843,6 +16866,15 @@ def live_route(vin: str | None = Query(None)):
         _ROUTE_CACHE.clear()          # one route at a time is all the page needs
         _ROUTE_CACHE[v] = got
     pts, how = got
+    # The car is on its own route: a reading that passes nowhere near where
+    # the car is (with a fix from the last 10 minutes) is not its route.
+    if pts and isinstance(loc, dict) and time.time() - loc_t < 600:
+        here = (float(loc["latitude"]), float(loc["longitude"]))
+        step = max(1, len(pts) // 400)
+        near = min((haversine_km(f"{here[0]}, {here[1]}", f"{p[0]}, {p[1]}") or 1e9)
+                   for p in pts[::step] + [pts[-1]])
+        if near > ROUTE_NEAR_CAR_KM:
+            pts, how = [], f"{how}, but it passes {near:.0f} km from the car"
     out = {"v": v, "points": pts, "raw_chars": len(raw), "format": how}
     if not pts:
         out["reason"] = "RouteLine arrived but did not decode as a route"

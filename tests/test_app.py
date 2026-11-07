@@ -9016,16 +9016,19 @@ def test_telemetry_config_separates_a_quiet_field_from_a_missing_one():
             fake = {"synced": True, "config": {
                 "hostname": "telemetry.example",
                 "fields": {"Soc": {"interval_seconds": 60}, "Gear": {},
-                           "LifetimeEnergyChargedKwh": {}}}}
+                           "LifetimeEnergyChargedKwh": {}, "RouteLine": {}}}}
             with mock.patch(
                     "app.tesla_client.TeslaClient.telemetry_config",
                     lambda self, v: fake):
                 out = client.get("/api/telemetry/config").json()
 
             assert out["synced"] is True
-            assert out["count"] == 3
+            assert out["count"] == 4
             # The car holds it; it just has not moved. Not a failed deploy.
             assert out["configured_but_quiet"] == ["LifetimeEnergyChargedKwh"]
+            # A live-only field is never stored: unseen since the restart is
+            # reported apart, not as a field the car is holding back.
+            assert out["live_only_not_seen_since_restart"] == ["RouteLine"]
             # Nothing should arrive that was never asked for.
             assert out["arriving_unconfigured"] == []
             # What each field was actually told, so a changed interval can be
@@ -14100,6 +14103,11 @@ def test_route_line_decodes_base64_polyline_at_precision_6():
     assert navroute.decode_route(raw) == pts
     # Unwrapped polyline is read too; junk and absurd lengths are no route.
     assert navroute.decode_route(_encode_polyline(pts)) == pts
+    # Near the destination the car sends a two-point route (24 characters);
+    # it is still a route.
+    two = [[3.123456, 101.654321], [3.124456, 101.655321]]
+    raw2 = base64.b64encode(_encode_polyline(two).encode()).decode()
+    assert len(raw2) == 24 and navroute.decode_route(raw2) == two
     assert navroute.decode_route("not a route!!") is None
     assert navroute.decode_route("") is None
     assert navroute.decode_route(None) is None
@@ -14153,8 +14161,19 @@ def test_live_reports_position_and_the_cars_navigation():
         # car sends its next figure.
         routes._live_mem_fold("VNAV", at(-3.5), {"Odometer": 101.0})
         assert routes._live_payload("VNAV", None)["nav"]["km"] == 6.4
+        # A distance sent with an invalid odometer in the same record counts
+        # down from the odometer the car last sent.
+        routes._live_mem_fold("VNAV", at(-3.4), {"MilesToArrival": 4.0, "Odometer": None})
+        routes._live_mem_fold("VNAV", at(-3.3), {"Odometer": 102.0})
+        assert routes._live_payload("VNAV", None)["nav"]["km"] == 4.8
         r = client.get("/api/live/route?vin=VNAV").json()
         assert r["v"] == nav["route_v"] and r["points"] == pts and r["raw_chars"] == len(route)
+        # A reading that passes nowhere near the car is not its route.
+        far = base64.b64encode(_encode_polyline([[5.4, 100.3], [5.41, 100.31], [5.42, 100.33]]).encode()).decode()
+        routes._LIVE_MEM["VNAV"]["RouteLine"] = far
+        r = client.get("/api/live/route?vin=VNAV").json()
+        assert r["points"] == [] and "km from the car" in r["format"]
+        routes._LIVE_MEM["VNAV"]["RouteLine"] = route
         # The car's own heading wins while fresh; junk locations are ignored.
         routes._live_mem_fold("VNAV", at(-3), {"GpsHeading": 181.0,
                                                 "Location": {"latitude": 0, "longitude": 0}})
@@ -14164,6 +14183,8 @@ def test_live_reports_position_and_the_cars_navigation():
         routes._LIVE_MEM["VNAV"]["_kt"]["GpsHeading"] = _t.time() - 900
         routes._LIVE_MEM["VNAV"]["_brg_t"] = _t.time() - 1200
         assert routes._live_payload("VNAV", None)["now"]["heading"] == 181.0
+        # The route text is never copied into the page's answer; its tag is.
+        assert "RouteLine" not in str(p.keys()) and routes._LIVE_MEM["VNAV"]["_route_v"] == nav["route_v"]
         # Route ended: the car sends the navigation fields as invalid.
         routes._live_mem_fold("VNAV", at(-2), {k: None for k in (
             "DestinationName", "DestinationLocation", "MinutesToArrival", "MilesToArrival",
@@ -14257,3 +14278,28 @@ def test_route_line_is_read_in_the_forms_a_car_may_send():
     assert got == pts and "coordinate pairs" in how
     got, how = navroute.decode_route_info(base64.b64encode(bytes(range(200, 230))).decode())
     assert got is None and how.startswith("not readable: base64 to 30 bytes, starting c8 c9")
+
+
+def test_live_navigation_ends_when_parked_at_the_destination():
+    """A car that goes to sleep on arrival may never send the route as ended:
+    in Park within 200 m of the end, the arrival box is dropped."""
+    import time as _t
+    from datetime import datetime, timezone
+    from app.api import routes
+
+    def at(sec):
+        return datetime.fromtimestamp(_t.time() + sec, timezone.utc).isoformat()
+
+    routes._LIVE_MEM.clear()
+    try:
+        routes._live_mem_fold("VARR", at(-5), {"Gear": "ShiftStateD", "VehicleSpeed": 20.0, "Odometer": 50.0,
+                                               "DestinationName": "Home", "MilesToArrival": 0.05,
+                                               "MinutesToArrival": 0.5})
+        assert routes._live_payload("VARR", None)["nav"]["name"] == "Home"     # still driving
+        routes._live_mem_fold("VARR", at(-1), {"Gear": "ShiftStateP", "VehicleSpeed": 0.0})
+        assert routes._live_payload("VARR", None)["nav"] is None
+        # Parked far from it (a stop on the way), the route stays.
+        routes._live_mem_fold("VARR", at(0), {"MilesToArrival": 3.0})
+        assert routes._live_payload("VARR", None)["nav"]["km"] == 4.8
+    finally:
+        routes._LIVE_MEM.clear()
