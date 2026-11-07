@@ -4418,17 +4418,17 @@ function glSpeedo({ value, max = 160, mark = null, gear = null, acc = 0, label =
       <linearGradient id="${uid}-bg" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="#14202f"/><stop offset=".6" stop-color="#0b121b"/><stop offset="1" stop-color="#070b11"/></linearGradient>
       <filter id="${uid}-glow" x="-30%" y="-30%" width="160%" height="160%">
-        <feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
     </defs>
     <polygon points="30,8 230,8 252,30 252,210 230,232 30,232 8,210 8,30" fill="url(#${uid}-bg)" stroke="${frame}" stroke-width="1.8"
       filter="url(#${uid}-glow)"/>
     <polygon points="34,15 226,15 245,34 245,206 226,225 34,225 15,206 15,34" fill="none" stroke="rgba(34,211,238,.25)" stroke-width="1"/>
-    <path d="M8 44V30L30 8h26M204 8h26l22 22v14M252 196v14l-22 22h-26M56 232H30L8 210v-14" fill="none" stroke="#fff" stroke-width="2" opacity=".9"/>
+    <path d="M8 44V30L30 8h26M204 8h26l22 22v14M252 196v14l-22 22h-26M56 232H30L8 210v-14" fill="none" stroke="#bfe6f2" stroke-width="2" opacity=".6"/>
     <path d="M70 15h120M70 225h120" stroke="${frame}" stroke-width="3.4" stroke-linecap="square" filter="url(#${uid}-glow)"/>
     ${edge}
     ${gears}${wings}
-    <text class="gl-spd" x="130" y="${num.length >= 3 ? 140 : 150}" text-anchor="middle" font-size="${size}" font-weight="800" fill="#f4fbff"
-      filter="url(#${uid}-glow)" style="font-variant-numeric:tabular-nums">${num}</text>
+    <text class="gl-spd" x="130" y="${num.length >= 3 ? 140 : 150}" text-anchor="middle" font-size="${size}" font-weight="800" fill="#d4dee8"
+      style="font-variant-numeric:tabular-nums">${num}</text>
     <text x="130" y="166" text-anchor="middle" font-size="10" font-weight="650" letter-spacing="2" fill="#7e93ab">KM/H</text>
     <g filter="url(#${uid}-glow)">${segs}</g>${markTick}${pointer}${labels}
   </svg>`;
@@ -5311,7 +5311,7 @@ function glGauge3D(spd, col, nw, odo, needle) {
       <linearGradient id="${uid}-gl" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
       <filter id="${uid}-glow" x="-40%" y="-40%" width="180%" height="180%">
-        <feGaussianBlur stdDeviation="2.4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <feGaussianBlur stdDeviation="1.8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
       <filter id="${uid}-bl"><feGaussianBlur stdDeviation="3.2"/></filter>
       <clipPath id="${uid}-cp"><circle cx="100" cy="100" r="62"/></clipPath>
     </defs>
@@ -6396,6 +6396,7 @@ function glMapGoogle(host) {
     },
     follow(p) {
       if (vec) map.moveCamera({ center: ll(ahead(p, map.getZoom() || 16)), heading, tilt });
+      else if (document.body.classList.contains("gl-dim")) map.setCenter(ll(p));   // dimmed: a jump, no animation
       else map.panTo(ll(p));
     },
     resize() {},
@@ -6471,7 +6472,10 @@ function glMapLeaflet(host) {
     jump(p, z) { layout(); map.setView(p, z, { animate: false }); },
     follow(p) {
       const dx = map.latLngToContainerPoint(p).distanceTo(map.getSize().divideBy(2));
-      if (dx > 1) map.panTo(p, { animate: dx < 400, duration: 0.2, easeLinearity: 1, noMoveStart: true });
+      // Bright, a short glide each step; dimmed (a step a second), a jump:
+      // no animation frames at all while the screen is only a glance.
+      const glide = dx < 400 && !document.body.classList.contains("gl-dim");
+      if (dx > 1) map.panTo(p, { animate: glide, duration: 0.2, easeLinearity: 1, noMoveStart: true });
     },
     resize() { layout(); },
   };
@@ -6579,12 +6583,15 @@ function glMapUpdate(mode) {
     eng.jump(pos, z, mode);
   } else eng.follow(pos);
 }
-// Five steps a second between redraws while a map is on screen and the car
-// is moving: only the arrow and the view move, nothing is rebuilt.
+// Five steps a second between redraws while a map is on screen, the car is
+// moving and the screen is bright: only the arrow and the view move.
 setInterval(() => {
   const D = glLiveState.data, nw = D && D.now;
   if (!GL_MAP.eng || !GL_MAP.host || !GL_MAP.host.isConnected || document.hidden
     || !nw || !(+nw.speed_kmh > 3)) return;
+  // Dimmed, the map moves once a second (with the redraw), not five times:
+  // each move repaints the whole map, the page's biggest battery cost.
+  if (document.body.classList.contains("gl-dim")) return;
   const slot = GL_MAP.host.parentElement;
   glMapUpdate((slot && slot.dataset.map) || "full");
 }, 200);
