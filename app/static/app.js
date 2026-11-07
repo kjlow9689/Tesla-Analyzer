@@ -5730,7 +5730,7 @@ function glAltPage(skin, c) {
     return `<div class="gl-page gl-alt gl-stackpage">
       <div class="gl-stk-top">${stat(kw != null && kw < 0 ? "regen kW" : "power kW", kwShown)}${stat("Wh/km now", c.nowWh != null ? n(c.nowWh) : "—")}
         ${stat("battery %", pct != null ? n(pct, 1, true) : "—", pct != null && pct < 20 ? "warn" : "good")}${stat("range km", range != null ? n(range) : "—")}</div>
-      <div class="gl-hud-speed" style="color:${col}">${num}<small>km/h · ${nw.shift || "P"}</small></div>
+      <div class="gl-hud-speed" style="color:${col}"><b class="gl-spdn">${num}</b><small>km/h · ${nw.shift || "P"}</small></div>
       <div class="gl-stk-bot"><div class="gl-stk-trace">${c.trace}</div>
         <div class="gl-stk-trip">${stat("km", dist != null ? n(dist, 1, true) : "—")}${stat("min", mins != null ? n(mins) : "—")}${stat("Wh/km", whk != null ? n(whk, 1, true) : "—", t ? twTone : "")}</div></div>
     </div>`;
@@ -5738,7 +5738,7 @@ function glAltPage(skin, c) {
   if (skin === 7) {
     // Mix: speed, power, the trace and the trip, all at once.
     return `<div class="gl-page gl-alt gl-mixpage">
-      <div class="gl-mix-speed" style="color:${col}">${num}<small>km/h · ${nw.shift || "P"}</small></div>
+      <div class="gl-mix-speed" style="color:${col}"><b class="gl-spdn">${num}</b><small>km/h · ${nw.shift || "P"}</small></div>
       <div class="gl-mix-pw"><div class="gl-mix-kw ${kw != null && kw < 0 ? "regen" : ""}"><span>${kw != null && kw < 0 ? "Regen" : "Power"}</span><strong>${kwShown}<small>kW</small></strong></div>${bar}
         <div class="gl-mix-batt"><span>Battery</span><strong>${pct != null ? n(pct, 1, true) : "—"}%</strong><em>${range != null ? n(range) + " km" : ""}</em></div></div>
       <div class="gl-mix-trace">${c.trace}</div>
@@ -6193,17 +6193,33 @@ function glRouteTrim(eng, pos) {
   if (now - (GL_MAP.trimAt || 0) < 1000) return;
   GL_MAP.trimAt = now;
   const k = Math.cos(pos[0] * Math.PI / 180) * 111320, M = 110540;
-  const from = GL_MAP.cut == null ? 0 : Math.max(0, GL_MAP.cut - 2);
-  const to = GL_MAP.cut == null ? pts.length - 1 : Math.min(pts.length - 1, GL_MAP.cut + 80);
-  let best = Infinity, bi = -1, bt = 0;
-  for (let i = from; i < to; i++) {
-    const ax = (pts[i][1] - pos[1]) * k, ay = (pts[i][0] - pos[0]) * M;
-    const dx = (pts[i + 1][1] - pts[i][1]) * k, dy = (pts[i + 1][0] - pts[i][0]) * M;
-    const L2 = dx * dx + dy * dy;
-    const t = L2 ? Math.min(1, Math.max(0, -(ax * dx + ay * dy) / L2)) : 0;
-    const ex = ax + t * dx, ey = ay + t * dy, d = ex * ex + ey * ey;
-    if (d < best) { best = d; bi = i; bt = t; }
+  // Nearest segment in [from, to); with `first`, the closest point of the
+  // first stretch that comes within 40 m (a route that loops back near its
+  // start is cut at the start, not on the way back).
+  const near = (from, to, first) => {
+    let best = Infinity, bi = -1, bt = 0;
+    for (let i = from; i < to; i++) {
+      const ax = (pts[i][1] - pos[1]) * k, ay = (pts[i][0] - pos[0]) * M;
+      const dx = (pts[i + 1][1] - pts[i][1]) * k, dy = (pts[i + 1][0] - pts[i][0]) * M;
+      const L2 = dx * dx + dy * dy;
+      const t = L2 ? Math.min(1, Math.max(0, -(ax * dx + ay * dy) / L2)) : 0;
+      const ex = ax + t * dx, ey = ay + t * dy, d = ex * ex + ey * ey;
+      if (d < best) { best = d; bi = i; bt = t; }
+      else if (first && best < 40 * 40) break;   // past the closest point near the car
+    }
+    return { best, bi, bt };
+  };
+  const end = pts.length - 1;
+  let f;
+  if (GL_MAP.cut == null) f = near(0, end, true);
+  else {
+    // The next stretch first; if the car is not there (the phone slept
+    // while the car drove on), the rest of the route.
+    const from = Math.max(0, GL_MAP.cut - 2);
+    f = near(from, Math.min(end, GL_MAP.cut + 80), false);
+    if (f.bi < 0 || f.best > 80 * 80) f = near(from, end, true);
   }
+  const { best, bi, bt } = f;
   if (bi < 0 || best > 80 * 80) return;
   GL_MAP.cut = bi;
   const a = pts[bi], b = pts[bi + 1];
