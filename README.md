@@ -321,8 +321,11 @@ Wh/km, power and battery floating over it. When a destination is set in the
 car, the route the car is navigating is drawn, with the destination, the
 arrival time, minutes and km to go and the battery % the car expects on
 arrival. The Cockpit's right-hand side is a small map at all times: driving,
-with the power on it and the battery bar under it (the drive's Wh/km is in the
-left tiles); parked, with the last trip over it. Round Mix
+with the power on it and the battery bar under it; its trip computer on the
+left holds three pages of four tiles (km, min, average and top speed; Wh/km,
+regen, battery used and net kWh; the car's range now, the range at this
+drive's rate, cost and outside temperature), dragged up or down a row at a
+time; parked, with the last trip over it. Round Mix
 keeps a map in its right-hand column at all times; its six figures sit on the
 left as three paired boxes: top and average km/h, battery used % and net kWh,
 time and distance. Dial has the map where its Battery bar was, with the
@@ -366,11 +369,24 @@ drawn wide and translucent so the traffic shows through it). To get a key:
 4. Render → the service → **Environment** → add `GOOGLE_MAPS_KEY` = the key →
    save (Render redeploys).
 
+**Heading-up (optional):** with a Map ID as well, the map is Google's vector
+map and turns with the car, the road ahead up, the car's arrow drawn by the
+page low in the map (78% of the way down) so most of the view is the road
+ahead. Without one the
+map stays north up. Google Cloud → **Google Maps Platform → Map management →
+Create Map ID**: any name, Map type **JavaScript**, **Vector** (tick Tilt and
+Rotation) → Save, then add its ID to Render as `GOOGLE_MAPS_MAP_ID`.
+
+The route is drawn solid blue with a dark edge. While a destination is set
+and no line can be drawn, a note on the map says why ("No route from the car
+yet", or "Route unreadable"), as does `/api/live/route`.
+
 The key reaches the browser (that is how Google's maps work), which is why it
 is restricted to this site. Without a key, or if Google refuses it or cannot
 be reached, the map falls back to CARTO by itself.
 
-Without Google, tiles are CARTO's dark basemap (OpenStreetMap data), its sharp @2x tiles on a
+Without Google the map is CARTO's, turned the same way (road ahead up, the car
+low in the view; its street names turn with it). Its tiles are CARTO's dark basemap (OpenStreetMap data), its sharp @2x tiles on a
 high-density screen, lifted in brightness so streets and names read in a car,
 loaded only when a map is on screen; the map takes no touches, so a swipe over it still changes the
 design. Leaflet is served from `app/static/vendor/`.

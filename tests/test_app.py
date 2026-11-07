@@ -14154,18 +14154,22 @@ def test_live_reports_position_and_the_cars_navigation():
         routes._live_mem_fold("VNAV", at(-3.5), {"Odometer": 101.0})
         assert routes._live_payload("VNAV", None)["nav"]["km"] == 6.4
         r = client.get("/api/live/route?vin=VNAV").json()
-        assert r["v"] == nav["route_v"] and r["points"] == pts
+        assert r["v"] == nav["route_v"] and r["points"] == pts and r["raw_chars"] == len(route)
         # The car's own heading wins while fresh; junk locations are ignored.
         routes._live_mem_fold("VNAV", at(-3), {"GpsHeading": 181.0,
                                                 "Location": {"latitude": 0, "longitude": 0}})
         p = routes._live_payload("VNAV", None)
         assert p["now"]["heading"] == 181.0 and p["now"]["lat"] == 3.1401
+        # Parked, a heading minutes old still says which way the car faces.
+        routes._LIVE_MEM["VNAV"]["_kt"]["GpsHeading"] = _t.time() - 900
+        routes._LIVE_MEM["VNAV"]["_brg_t"] = _t.time() - 1200
+        assert routes._live_payload("VNAV", None)["now"]["heading"] == 181.0
         # Route ended: the car sends the navigation fields as invalid.
         routes._live_mem_fold("VNAV", at(-2), {k: None for k in (
             "DestinationName", "DestinationLocation", "MinutesToArrival", "MilesToArrival",
             "ExpectedEnergyPercentAtTripArrival", "RouteLine")})
         assert routes._live_payload("VNAV", None)["nav"] is None
-        assert client.get("/api/live/route?vin=VNAV").json() == {"v": None, "points": []}
+        assert client.get("/api/live/route?vin=VNAV").json()["points"] == []
         # An older record replayed late does not bring the route back.
         routes._live_mem_fold("VNAV", at(-4), {"RouteLine": route, "MinutesToArrival": 12.5})
         assert routes._live_payload("VNAV", None)["nav"] is None
@@ -14183,11 +14187,17 @@ def test_map_config_names_the_google_key_only_when_set():
     try:
         client = TestClient(app)
         settings.google_maps_key = ""
-        assert client.get("/api/map-config").json() == {"google_key": None, "traffic": False}
+        assert client.get("/api/map-config").json() == {"google_key": None, "traffic": False,
+                                                         "map_id": None, "heading_up": False}
         settings.google_maps_key = " AIzaTestKey "
-        assert client.get("/api/map-config").json() == {"google_key": "AIzaTestKey", "traffic": True}
+        assert client.get("/api/map-config").json() == {"google_key": "AIzaTestKey", "traffic": True,
+                                                         "map_id": None, "heading_up": False}
+        settings.google_maps_map_id = "abc123"
+        assert client.get("/api/map-config").json()["heading_up"] is True
+        assert client.get("/api/map-config").json()["map_id"] == "abc123"
     finally:
         settings.google_maps_key = old
+        settings.google_maps_map_id = ""
 
 
 def test_live_map_starts_from_the_cars_last_known_position():
@@ -14219,3 +14229,31 @@ def test_live_map_starts_from_the_cars_last_known_position():
         routes._LIVE_MEM.clear()
         with SessionLocal() as s:
             state.put(s, state.TELEMETRY_LATEST_KEY, old or "{}")
+
+
+def test_route_line_is_read_in_the_forms_a_car_may_send():
+    """Documented: base64 polyline, precision 6. Read too: URL-safe base64,
+    compressed, longitude first, a polyline wrapped in a protobuf field, and a
+    protobuf of coordinate pairs; anything else says what the bytes were."""
+    import base64
+    import struct
+    import zlib
+    from app import navroute
+
+    pts = [[3.139003, 101.686855], [3.140112, 101.690001], [3.152, 101.712345]]
+    poly = _encode_polyline(pts).encode()
+    forms = {
+        "url-safe": base64.urlsafe_b64encode(poly).decode().rstrip("="),
+        "compressed": base64.b64encode(zlib.compress(poly)).decode(),
+        "lon first": base64.b64encode(_encode_polyline([[x, y] for y, x in pts]).encode()).decode(),
+        "wrapped": base64.b64encode(b"\x0a" + bytes([len(poly)]) + poly + b"\x10\x01").decode(),
+    }
+    for name, raw in forms.items():
+        assert navroute.decode_route(raw) == pts, name
+    def msg(field, body):
+        return bytes([(field << 3) | 2, len(body)]) + body
+    pairs = b"".join(msg(1, b"\x09" + struct.pack("<d", y) + b"\x11" + struct.pack("<d", x)) for y, x in pts)
+    got, how = navroute.decode_route_info(base64.b64encode(pairs).decode())
+    assert got == pts and "coordinate pairs" in how
+    got, how = navroute.decode_route_info(base64.b64encode(bytes(range(200, 230))).decode())
+    assert got is None and how.startswith("not readable: base64 to 30 bytes, starting c8 c9")

@@ -5516,13 +5516,15 @@ function glAltPage(skin, c) {
     return `<div class="gl-page gl-alt gl-mapd">
       <div class="gl-map-slot" data-map="full">
         ${nw.lat == null ? '<div class="gl-map-wait">Waiting for the car\'s location…</div>' : ""}
-        <div class="gl-mapo gl-mapo-spd"><strong style="color:${col}">${num}</strong><small>km/h</small><span class="gl-mapo-gear">${gear}</span></div>
+        <div class="gl-mapo gl-mapo-spd"><strong style="color:${col}">${num}</strong><small>km/h</small><span class="gl-mapo-gear">${gear}</span>
+          <span class="gl-mapo-batt2 ${pct != null && pct < 20 ? "warn" : ""}">${pct != null ? n(pct, 1, true) : "—"}<small>%</small></span></div>
         ${navBox}
+        <!-- Two boxes either side of a gap in the middle, where the car is. -->
         <div class="gl-mapo gl-mapo-row">
           ${stat("km", dist != null ? n(dist, 1, true) : "—")}${stat("min", mins != null ? n(mins) : "—")}
+          <i class="gl-mapo-gap"></i>
           ${stat("Wh/km", whk != null ? n(whk, 1, true) : "—", t ? twTone : "")}
           ${stat("kW", kwShown, kw != null && kw < 0 ? "good" : "")}
-          ${stat("Batt %", pct != null ? n(pct, 1, true) : "—", pct != null && pct < 20 ? "warn" : "")}
         </div>
       </div></div>`;
   }
@@ -5839,6 +5841,9 @@ function renderGlance(d) {
         batt: '<rect x="3" y="7" width="16" height="10" rx="2.5"/><path d="M22 11v2M7 10v4M11 10v4"/>',
         range: '<path d="M12 21s-6-5.6-6-11a6 6 0 0 1 12 0c0 5.4-6 11-6 11Z"/><circle cx="12" cy="10" r="2.2"/>',
         odo: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10v4M11 10v4M15 10v4"/>',
+        regen: '<path d="M20 12a8 8 0 1 1-3-6.2"/><path d="M20 4v4h-4"/>',
+        cost: '<circle cx="12" cy="12" r="8.5"/><path d="M14.5 9.5c-.5-1-1.5-1.5-2.5-1.5-1.5 0-2.5.8-2.5 2s1 1.7 2.5 2 2.5.8 2.5 2-1 2-2.5 2c-1 0-2-.5-2.5-1.5M12 6.5v11"/>',
+        temp: '<path d="M10 14V5a2 2 0 1 1 4 0v9a4 4 0 1 1-4 0Z"/>',
       };
       // The unit is the tile's label (km, min, Wh/km), so the number alone
       // fills the width and can be drawn much larger.
@@ -5920,6 +5925,11 @@ function renderGlance(d) {
           <div class="gl-power-sub">used ${n(usedPct, 2, true)}% this drive · ${n(t.energy_kwh, 2)} kWh</div></div>`;
       const twTone = rated && tw ? (tw > rated ? "warn" : "good") : "";
       const odoNow = nw.odo_km ?? (lastData && lastData.vehicle && lastData.vehicle.current_odo_km);
+      // How far the energy left would go at this drive's Wh/km, and what a kWh
+      // out of the pack cost at the last charge (its charger loss included).
+      const estRange = nw.energy_kwh != null && tw > 0 ? nw.energy_kwh * 1000 / tw : null;
+      const lc = (lastData && lastData.last_charge) || {};
+      const costRate = lc.cost != null && lc.energy_added_kwh > 0 ? lc.cost / lc.energy_added_kwh : null;
       // The right side is a small map following the car (the route and the
       // car's arrival figures on it while navigating), the battery bar under
       // it. The drive's Wh/km takes the Max km/h tile's place on the left,
@@ -5938,12 +5948,25 @@ function renderGlance(d) {
         return page(
           `<div class="gl-trip">
             <div class="gl-trip-h"><b class="rec"></b>Trip computer<em>since ${h(String(tripWhen(t.start_time) || "").split(" ").pop())}</em></div>
-            <div class="gl-rts">
-              ${tile("dist", "km", n(t.distance_km, 1, true))}
-              ${tile("time", "min", n(t.duration_min))}
-              ${tile("speed", "Avg km/h", n(t.avg_speed_kmh))}
-              ${tile("whkm", "Wh/km", tw != null ? n(tw, 1, true) : "—", twTone)}
-            </div>
+            ${glVPages([[
+              // The drive: distance, time and speed.
+              tile("dist", "km", n(t.distance_km, 1, true)),
+              tile("time", "min", n(t.duration_min)),
+              tile("speed", "Avg km/h", n(t.avg_speed_kmh)),
+              tile("speed", "Top km/h", t.max_speed_kmh != null ? n(t.max_speed_kmh) : "—"),
+            ], [
+              // Its energy.
+              tile("whkm", "Wh/km", tw != null ? n(tw, 1, true) : "—", twTone),
+              tile("regen", "Regen kWh", t.regen_kwh != null ? n(t.regen_kwh, 2) : "—", "good"),
+              tile("batt", "Batt used %", n(usedPct, 2, true)),
+              tile("whkm", "Net kWh", t.energy_kwh != null ? n(t.energy_kwh, 2) : "—"),
+            ], [
+              // What is left, and what it cost.
+              tile("range", "Range km now", nw.range_km != null ? n(nw.range_km) : "—"),
+              tile("range", "Range at rate", estRange != null ? n(estRange) : "—"),
+              tile("cost", `Cost ${cur || "RM"}`, costRate != null && t.energy_kwh != null ? n(t.energy_kwh * costRate, 2, true) : "—"),
+              tile("temp", "Outside °C", nw.out_temp != null ? n(nw.out_temp, 0) : "—"),
+            ]])}
             <div class="gl-odo"><span>Odo km</span>
               <strong>${odoNow != null ? n(odoNow, 1) : "—"}</strong></div>
           </div>`,
@@ -6196,9 +6219,13 @@ function glMapReady() {
     return null;
   }
   if (GL_MAP.cfg.google_key && !GL_MAP.gFailed) {
-    if (window.google && window.google.maps && window.google.maps.Map) return "google";
+    const vec = !!GL_MAP.cfg.map_id;
+    if (window.google && window.google.maps && window.google.maps.Map
+      && (!vec || (window.google.maps.marker && window.google.maps.marker.AdvancedMarkerElement))) return "google";
+    // With a Map ID the map is Google's vector map, which can turn to face
+    // the way the car is heading; its markers come from the marker library.
     glMapScript("google", "https://maps.googleapis.com/maps/api/js?v=weekly&key="
-      + encodeURIComponent(GL_MAP.cfg.google_key) + "&language=en&region=MY");
+      + encodeURIComponent(GL_MAP.cfg.google_key) + "&language=en&region=MY" + (vec ? "&libraries=marker" : ""));
     return null;
   }
   if (window.L && window.L.map) return "leaflet";
@@ -6226,29 +6253,91 @@ const GL_GMAP_NIGHT = [
   { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#4e6a86" }] },
 ];
 const GL_CAR_ARROW = "M0,-11 L8,9 L0,4 L-8,9 Z";
+// The car's arrow and the destination pin as page elements, for the vector
+// map's markers (which stay upright on screen while the map turns).
+const GL_CAR_LOW = 0.78;   // how far down the turning map the car sits
+const GL_CAR_SVG = '<svg viewBox="0 0 34 34" aria-hidden="true"><circle cx="17" cy="17" r="15"/><path d="M17 6 25 26 17 21 9 26Z"/></svg>';
 function glMapGoogle(host) {
   const g = window.google.maps;
-  const map = new g.Map(host, { center: { lat: 3.14, lng: 101.69 }, zoom: 3, disableDefaultUI: true,
-    gestureHandling: "none", keyboardShortcuts: false, clickableIcons: false, backgroundColor: "#11161c",
-    styles: GL_GMAP_NIGHT });
-  // Live traffic on every road, the route included: green, orange, red.
+  const mapId = GL_MAP.cfg && GL_MAP.cfg.map_id;
+  const vec = !!(mapId && g.marker && g.marker.AdvancedMarkerElement);
+  // Vector (Map ID): Google's own dark scheme, and the map turns with the car,
+  // the road ahead up, as the car's screen does. Raster (no Map ID): a dark
+  // style of our own, north up.
+  // On the turning map the car is drawn by the page, not by Google, low in
+  // the map (GL_CAR_LOW of the way down) with the road ahead above it: the
+  // view is centred that far ahead of the car, along its heading.
+  let mapDiv = host, fixCar = null;
+  if (vec) {
+    mapDiv = document.createElement("div");
+    mapDiv.className = "gl-map-inner";
+    fixCar = document.createElement("div");
+    fixCar.className = "gl-map-car gl-map-carfix";
+    fixCar.innerHTML = GL_CAR_SVG;
+    host.append(mapDiv, fixCar);
+  }
+  const map = new g.Map(mapDiv, Object.assign({ center: { lat: 3.14, lng: 101.69 }, zoom: 3, disableDefaultUI: true,
+    gestureHandling: "none", keyboardShortcuts: false, clickableIcons: false, backgroundColor: "#11161c" },
+    vec ? { mapId, colorScheme: "DARK", renderingType: "VECTOR", headingInteractionEnabled: false, tiltInteractionEnabled: false }
+      : { styles: GL_GMAP_NIGHT }));
+  // Live traffic on every road: green, orange, red.
   new g.TrafficLayer().setMap(map);
-  let car = null, dest = null, line = null, lastHd;
+  let car = null, dest = null, casing = null, line = null, lineDim = null, lastHd;
+  let heading = 0, tilt = 0;
   const ll = (p) => ({ lat: p[0], lng: p[1] });
+  const ahead = (p, z) => {
+    const mPerPx = 156543.03 * Math.cos(p[0] * Math.PI / 180) / Math.pow(2, z);
+    const m = (mapDiv.clientHeight || host.clientHeight) * (GL_CAR_LOW - 0.5) * mPerPx, rad = heading * Math.PI / 180;
+    return [p[0] + (m * Math.cos(rad)) / 111320, p[1] + (m * Math.sin(rad)) / (111320 * Math.cos(p[0] * Math.PI / 180))];
+  };
   return {
     setRoute(pts) {
-      if (!pts || !pts.length) { if (line) { line.setMap(null); line = null; } return; }
-      // Wide and translucent, so the traffic colours on the road show through.
-      if (!line) line = new g.Polyline({ map, clickable: false, strokeColor: "#22d3ee", strokeOpacity: 0.4, strokeWeight: 11, zIndex: 1 });
-      line.setPath(pts.map(ll));
+      if (!pts || !pts.length) {
+        if (line) { line.setMap(null); casing.setMap(null); line = casing = null; }
+        return;
+      }
+      // Solid blue with a dark edge, over the traffic, as the car draws it.
+      if (!line) {
+        casing = new g.Polyline({ map, clickable: false, strokeColor: "#0a1a33", strokeOpacity: 0.9, strokeWeight: 10, zIndex: 1 });
+        line = new g.Polyline({ map, clickable: false, strokeColor: "#3b8bff", strokeOpacity: 1, strokeWeight: 6, zIndex: 2 });
+      }
+      const path = pts.map(ll);
+      casing.setPath(path); line.setPath(path);
+      lineDim = null;
+    },
+    // Dimmed, the map underneath fades and the route brightens and thickens,
+    // so it still stands out.
+    setDim(dim) {
+      if (!line || lineDim === dim) return;
+      lineDim = dim;
+      line.setOptions(dim ? { strokeColor: "#8cc2ff", strokeWeight: 8 } : { strokeColor: "#3b8bff", strokeWeight: 6 });
+      casing.setOptions({ strokeWeight: dim ? 12 : 10 });
     },
     setDest(p) {
-      if (!p) { if (dest) { dest.setMap(null); dest = null; } return; }
-      if (!dest) dest = new g.Marker({ map, clickable: false, zIndex: 900, icon: { path: g.SymbolPath.CIRCLE, scale: 8,
-        fillColor: "#ff3b6b", fillOpacity: 1, strokeColor: "#ffffff", strokeWeight: 2 } });
-      dest.setPosition(ll(p));
+      if (!p) { if (dest) { dest.map = null; if (dest.setMap) dest.setMap(null); dest = null; } return; }
+      if (!dest) {
+        if (vec) {
+          const el = document.createElement("div");
+          el.className = "gl-map-dest"; el.innerHTML = "<b></b>";
+          el.style.transform = "translateY(50%)";
+          dest = new g.marker.AdvancedMarkerElement({ map, content: el, zIndex: 900 });
+        } else {
+          dest = new g.Marker({ map, clickable: false, zIndex: 900, icon: { path: g.SymbolPath.CIRCLE, scale: 8,
+            fillColor: "#ff3b6b", fillOpacity: 1, strokeColor: "#ffffff", strokeWeight: 2 } });
+        }
+      }
+      if (vec) dest.position = ll(p); else dest.setPosition(ll(p));
     },
     setCar(p, hd) {
+      if (hd != null) heading = hd;
+      if (vec) {
+        // The map turns with the car, so the arrow points straight up; with
+        // no heading yet it is a dot.
+        const svg = fixCar.querySelector("svg");
+        svg.style.transform = "";
+        svg.classList.toggle("nohd", hd == null);
+        return;
+      }
       if (!car) car = new g.Marker({ map, clickable: false, zIndex: 1000 });
       car.setPosition(ll(p));
       const key = hd == null ? null : Math.round(hd);
@@ -6260,29 +6349,65 @@ function glMapGoogle(host) {
             strokeColor: "#22d3ee", strokeWeight: 2, anchor: new g.Point(0, 0) });
       }
     },
-    jump(p, z) { map.setZoom(z); map.setCenter(ll(p)); },
-    follow(p) { map.panTo(ll(p)); },
+    jump(p, z, mode) {
+      if (vec) {
+        // Flat, so the car's place on screen is exact.
+        tilt = 0;
+        map.moveCamera({ center: ll(ahead(p, z)), zoom: z, heading, tilt });
+      } else { map.setZoom(z); map.setCenter(ll(p)); }
+    },
+    follow(p) {
+      if (vec) map.moveCamera({ center: ll(ahead(p, map.getZoom() || 16)), heading, tilt });
+      else map.panTo(ll(p));
+    },
     resize() {},
   };
 }
 function glMapLeaflet(host) {
   const L = window.L;
-  const map = L.map(host, { zoomControl: false, dragging: false, touchZoom: false, scrollWheelZoom: false,
+  // CARTO's tiles are flat pictures, so the map turns as a whole: a square
+  // big enough to cover the view at any angle, centred on the car's place on
+  // screen (GL_CAR_LOW of the way down) and rotated against the car's heading,
+  // so the road ahead is up as on Google's map. The car is drawn by the page
+  // at that place; the credit line sits outside the turning square.
+  const inner = document.createElement("div");
+  inner.className = "gl-map-inner gl-map-rot";
+  const fixCar = document.createElement("div");
+  fixCar.className = "gl-map-car gl-map-carfix";
+  fixCar.innerHTML = GL_CAR_SVG;
+  const credit = document.createElement("div");
+  credit.className = "gl-map-credit";
+  credit.textContent = "© OpenStreetMap contributors © CARTO";
+  host.append(inner, fixCar, credit);
+  const map = L.map(inner, { zoomControl: false, dragging: false, touchZoom: false, scrollWheelZoom: false,
     doubleClickZoom: false, boxZoom: false, keyboard: false, tap: false, fadeAnimation: false,
-    attributionControl: true });
-  map.attributionControl.setPrefix(false);
+    attributionControl: false });
   // {r} asks CARTO for its sharp @2x tiles on a high-density screen, at the
   // normal label size (detectRetina would also step the zoom up a level,
   // shrinking every street name to half size).
-  L.tileLayer(GL_MAP_TILES, { subdomains: "abcd", maxZoom: 20, maxNativeZoom: 20, detectRetina: false,
-    attribution: "© OpenStreetMap contributors © CARTO" }).addTo(map);
+  L.tileLayer(GL_MAP_TILES, { subdomains: "abcd", maxZoom: 20, maxNativeZoom: 20, detectRetina: false }).addTo(map);
   map.setView([0, 0], 2);
-  let car = null, dest = null, line = null;
+  let dest = null, line = null, rot = 0, sizeKey = "";
+  const layout = () => {
+    const w = host.clientWidth, h = host.clientHeight;
+    if (!w || !h) return;
+    const cx = w / 2, cy = h * GL_CAR_LOW;
+    const r = Math.ceil(Math.hypot(Math.max(cx, w - cx), Math.max(cy, h - cy))) + 4;
+    const key = `${w}x${h}`;
+    if (key === sizeKey) return;
+    sizeKey = key;
+    Object.assign(inner.style, { width: 2 * r + "px", height: 2 * r + "px", left: (cx - r) + "px", top: (cy - r) + "px" });
+    map.invalidateSize(false);
+  };
+  layout();
   return {
     setRoute(pts) {
-      if (!pts || !pts.length) { if (line) { line.remove(); line = null; } return; }
-      if (!line) line = L.polyline([], { color: "#22d3ee", weight: 6, opacity: 0.85, interactive: false }).addTo(map);
-      line.setLatLngs(pts);
+      if (!pts || !pts.length) { if (line) { line.forEach((l) => l.remove()); line = null; } return; }
+      if (!line) {
+        line = [L.polyline([], { color: "#0a1a33", weight: 10, opacity: 0.9, interactive: false }).addTo(map),
+          L.polyline([], { color: "#3b8bff", weight: 6, opacity: 1, interactive: false }).addTo(map)];
+      }
+      line.forEach((l) => l.setLatLngs(pts));
     },
     setDest(p) {
       if (!p) { if (dest) { dest.remove(); dest = null; } return; }
@@ -6291,27 +6416,30 @@ function glMapLeaflet(host) {
       else dest.setLatLng(p);
     },
     setCar(p, hd) {
-      if (!car) {
-        car = L.marker(p, { interactive: false, keyboard: false, zIndexOffset: 1000,
-          icon: L.divIcon({ className: "gl-map-car", iconSize: [34, 34], iconAnchor: [17, 17],
-            html: '<svg viewBox="0 0 34 34" aria-hidden="true"><circle cx="17" cy="17" r="15"/><path d="M17 6 25 26 17 21 9 26Z"/></svg>' }) }).addTo(map);
-      } else car.setLatLng(p);
-      const svg = car.getElement() && car.getElement().querySelector("svg");
-      if (svg) {
-        svg.style.transform = hd != null ? `rotate(${hd}deg)` : "";
-        svg.classList.toggle("nohd", hd == null);
-      }
+      if (hd == null) return;
+      // Turn the short way round (350 to 10 degrees is 20, not 340).
+      let d = ((-hd - rot) % 360 + 540) % 360 - 180;
+      rot += d;
+      inner.style.transform = `rotate(${rot.toFixed(1)}deg)`;
     },
-    jump(p, z) { map.setView(p, z, { animate: false }); },
+    jump(p, z) { layout(); map.setView(p, z, { animate: false }); },
     follow(p) {
       const dx = map.latLngToContainerPoint(p).distanceTo(map.getSize().divideBy(2));
       if (dx > 1) map.panTo(p, { animate: dx < 400, duration: 0.2, easeLinearity: 1, noMoveStart: true });
     },
-    resize() {
-      const sz = map.getSize();
-      if (sz.x !== host.clientWidth || sz.y !== host.clientHeight) map.invalidateSize(false);
-    },
+    resize() { layout(); },
   };
+}
+// A small note on the map while a destination is set but no route line can
+// be drawn, so the reason shows without opening anything.
+function glMapRouteNote(text) {
+  GL_MAP.note = text;
+  const host = GL_MAP.host;
+  if (!host) return;
+  let el = host.querySelector(".gl-map-note");
+  if (!text) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement("div"); el.className = "gl-map-note"; host.append(el); }
+  el.textContent = text;
 }
 function glMapMount(root) {
   const slot = root && root.querySelector(".gl-map-slot");
@@ -6349,10 +6477,15 @@ function glMapUpdate(mode) {
           if (!r || r.v !== GL_MAP.routeAsk || !GL_MAP.eng) return;
           GL_MAP.routeV = r.v; GL_MAP.route = r;
           GL_MAP.eng.setRoute(r.points || []);
+          glMapRouteNote(r.points && r.points.length ? "" : `Route unreadable (${r.raw_chars || 0} chars)`);
         }).catch(() => { GL_MAP.routeAsk = null; });
     }
   }
   eng.setDest(nav && nav.dest_lat != null ? [nav.dest_lat, nav.dest_lon] : null);
+  if (eng.setDim) eng.setDim(document.body.classList.contains("gl-dim"));
+  // Navigating with no route line to draw: say why, on the map.
+  if (!nav) glMapRouteNote("");
+  else if (!rv) glMapRouteNote("No route from the car yet");
   if (nw.lat == null) {
     if (nav && nav.dest_lat != null && GL_MAP.zoomKey !== "dest") { eng.jump([nav.dest_lat, nav.dest_lon], 13); GL_MAP.zoomKey = "dest"; }
     return;
@@ -6368,7 +6501,17 @@ function glMapUpdate(mode) {
     pos = [nw.lat + (m * Math.cos(rad)) / 111320,
       nw.lon + (m * Math.sin(rad)) / (111320 * Math.cos(nw.lat * Math.PI / 180))];
   }
-  eng.setCar(pos, nw.heading != null ? +nw.heading : null);
+  // The way the car points: the car's own figure, else the last one this
+  // phone saw (a parked car still faces that way, even after the server has
+  // restarted), else north. Always an arrow, never a bare dot.
+  let hd = nw.heading != null ? +nw.heading : null;
+  if (hd != null) {
+    if (hd !== GL_MAP.lastHd) { GL_MAP.lastHd = hd; try { localStorage.setItem("glLastHeading", String(hd)); } catch (_) { /* private mode */ } }
+  } else {
+    if (GL_MAP.lastHd == null) { try { const v = parseFloat(localStorage.getItem("glLastHeading")); if (Number.isFinite(v)) GL_MAP.lastHd = v; } catch (_) { /* none */ } }
+    hd = GL_MAP.lastHd != null ? GL_MAP.lastHd : 0;
+  }
+  eng.setCar(pos, hd);
   // Follow the car, closer in town and further out on the highway; the zoom
   // changes only when the speed crosses a band, so it does not breathe.
   const v = +nw.speed_kmh || 0;
@@ -6376,7 +6519,7 @@ function glMapUpdate(mode) {
   const key = mode + z;
   if (key !== GL_MAP.zoomKey) {
     GL_MAP.zoomKey = key;
-    eng.jump(pos, z);
+    eng.jump(pos, z, mode);
   } else eng.follow(pos);
 }
 // Five steps a second between redraws while a map is on screen and the car
@@ -7781,6 +7924,60 @@ showHome();
   }, { passive: false });
 })();
 
+// Pages of tiles that scroll inside the page (the Cockpit's trip computer):
+// two rows in view, dragged up or down a row at a time. The page is rebuilt
+// up to five times a second, which would cut a native scroll off mid-drag,
+// so the position lives here (0 = first page, 1 = last) and every redraw
+// draws the pages where they were. Each page is a 2 x 2 grid stacked in one
+// cell and moved by its own height, so no size has to be measured.
+const GL_VSCROLL = { f: 0, drag: null };
+function glVPages(pages) {
+  const f = GL_VSCROLL.f, N = pages.length;
+  const steps = (N - 1) * 2;
+  return `<div class="gl-vpages${f > 0.02 ? " up" : ""}${f < 0.98 ? " down" : ""}" data-vscroll data-steps="${steps}" style="--f:${f.toFixed(3)};--n:${N - 1}">
+    ${pages.map((p, i) => `<div class="gl-rts gl-vpage" style="--i:${i}">${p.join("")}</div>`).join("")}
+    <span class="gl-vdots">${pages.map((_, i) => `<i class="${Math.round(f * (N - 1)) === i ? "on" : ""}"></i>`).join("")}</span></div>`;
+}
+function glVScrollSet(f, snap) {
+  const box = document.querySelector("#glance [data-vscroll]");
+  const steps = (box && +box.dataset.steps) || 1;
+  f = Math.max(0, Math.min(1, f));
+  if (snap) f = Math.round(f * steps) / steps;
+  GL_VSCROLL.f = f;
+  if (!box) return;
+  box.classList.toggle("glide", !!snap);
+  box.style.setProperty("--f", f.toFixed(3));
+  box.classList.toggle("up", f > 0.02);
+  box.classList.toggle("down", f < 0.98);
+  const dots = [...box.querySelectorAll(".gl-vdots i")];
+  const on = Math.round(f * (dots.length - 1));
+  dots.forEach((d, i) => d.classList.toggle("on", i === on));
+}
+document.addEventListener("pointerdown", (e) => {
+  const box = e.target.closest && e.target.closest("#glance [data-vscroll]");
+  // One full drag of the box's height moves one page.
+  GL_VSCROLL.drag = box ? { y: e.clientY, f0: GL_VSCROLL.f, span: (box.clientHeight + 8) * Math.max(1, (+box.dataset.steps || 2) / 2), id: e.pointerId } : null;
+}, { passive: true });
+document.addEventListener("pointermove", (e) => {
+  const d = GL_VSCROLL.drag;
+  if (!d || e.pointerId !== d.id) return;
+  glVScrollSet(d.f0 - (e.clientY - d.y) / d.span, false);
+}, { passive: true });
+const glVScrollEnd = (e) => {
+  const d = GL_VSCROLL.drag;
+  if (!d || e.pointerId !== d.id) return;
+  GL_VSCROLL.drag = null;
+  glVScrollSet(GL_VSCROLL.f, true);
+};
+document.addEventListener("pointerup", glVScrollEnd, { passive: true });
+document.addEventListener("pointercancel", glVScrollEnd, { passive: true });
+document.addEventListener("wheel", (e) => {
+  const box = e.target.closest && e.target.closest("#glance [data-vscroll]");
+  if (!box) return;
+  e.preventDefault();
+  glVScrollSet(GL_VSCROLL.f + Math.sign(e.deltaY) / ((+box.dataset.steps) || 1), true);
+}, { passive: false });
+
 // Swipe across the Live page to change its design: left or right for the
 // single designs, up or down for the combinations. A swipe has to be mostly
 // along one axis and a good length, and not start at a screen edge (where the
@@ -7790,7 +7987,7 @@ showHome();
   document.addEventListener("pointerdown", (e) => {
     const g = e.target.closest && e.target.closest("#glance");
     const edge = 28;
-    sw = g && glanceTab === "live" && !e.target.closest("button, a, input, select")
+    sw = g && glanceTab === "live" && !e.target.closest("button, a, input, select, [data-vscroll]")
       && e.clientX > edge && e.clientX < innerWidth - edge && e.clientY > edge && e.clientY < innerHeight - edge
       ? { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId } : null;
   }, { passive: true });

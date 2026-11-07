@@ -7482,7 +7482,9 @@ def map_config():
     set (a browser key, restricted to this site in Google Cloud, so it is
     public by design), else none and the page uses CARTO's tiles."""
     key = (get_settings().google_maps_key or "").strip()
-    return {"google_key": key or None, "traffic": bool(key)}
+    map_id = (get_settings().google_maps_map_id or "").strip()
+    return {"google_key": key or None, "traffic": bool(key),
+            "map_id": (map_id or None) if key else None, "heading_up": bool(key and map_id)}
 
 
 @router.get("/push/vapid-public-key")
@@ -16449,6 +16451,7 @@ def _live_mem_fold_locked(vin: str, created_at, fields: dict) -> None:
             elif (haversine_km(f"{anchor[0]}, {anchor[1]}", f"{b[0]}, {b[1]}") or 0.0) > 0.012:
                 car["_brg"] = navroute.bearing_deg(tuple(anchor), b)
                 car["_brg_at"] = b
+                car["_brg_t"] = ts or time.time()
         if k == "MilesToArrival":
             # The odometer when the car last said how far is left: the km to
             # go then counts down with the odometer between its updates
@@ -16766,9 +16769,12 @@ def _live_position(car: dict) -> dict:
            # To a tenth: the page moves the arrow on from the fix by this much.
            "loc_age_sec": round(max(time.time() - float(kt.get("Location") or 0.0), 0.0), 1)}
     hd = car.get("GpsHeading")
-    # The car's own heading while it is fresh; else the bearing between its
-    # last two fixes.
-    if hd is not None and time.time() - float(kt.get("GpsHeading") or 0.0) < 120:
+    # The car's own heading, however old: a parked car still faces the way
+    # it last reported (the car sends the field only when it changes); else
+    # the bearing between its last fixes. A fresh bearing from moving wins
+    # over a heading from before the car moved.
+    hd_t, brg_t = float(kt.get("GpsHeading") or 0.0), float(car.get("_brg_t") or 0.0)
+    if hd is not None and (car.get("_brg") is None or hd_t >= brg_t - 5):
         out["heading"] = round(float(hd) % 360.0, 1)
     elif car.get("_brg") is not None:
         out["heading"] = round(float(car["_brg"]), 1)
@@ -16813,7 +16819,7 @@ def _live_nav(car: dict) -> dict | None:
     return nav
 
 
-_ROUTE_CACHE: dict[str, list] = {}
+_ROUTE_CACHE: dict[str, tuple] = {}
 
 
 @router.get("/live/route")
@@ -16826,13 +16832,21 @@ def live_route(vin: str | None = Query(None)):
         raw = car.get("RouteLine")
     v = navroute.route_version(raw)
     if not v:
-        return {"v": None, "points": []}
-    pts = _ROUTE_CACHE.get(v)
-    if pts is None:
-        pts = navroute.decode_route(raw) or []
+        # Why there is no line: the car has sent no route (none set, or the
+        # car's configuration has no RouteLine yet), as opposed to one that
+        # could not be read.
+        return {"v": None, "points": [], "raw_chars": 0, "reason": "no RouteLine from the car"}
+    got = _ROUTE_CACHE.get(v)
+    if got is None:
+        pts, how = navroute.decode_route_info(raw)
+        got = (pts or [], how)
         _ROUTE_CACHE.clear()          # one route at a time is all the page needs
-        _ROUTE_CACHE[v] = pts
-    return {"v": v, "points": pts}
+        _ROUTE_CACHE[v] = got
+    pts, how = got
+    out = {"v": v, "points": pts, "raw_chars": len(raw), "format": how}
+    if not pts:
+        out["reason"] = "RouteLine arrived but did not decode as a route"
+    return out
 
 
 @router.get("/live")

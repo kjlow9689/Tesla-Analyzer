@@ -3359,7 +3359,13 @@ main > .card { max-width: 100%; }
 .gl-map-dest b { display: block; width: 18px; height: 18px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
   background: #ff3b6b; border: 2px solid #fff; box-shadow: 0 0 10px rgba(255, 59, 107, .8); }
 /* Dimmed, the map fades with everything else. */
-.gl-dim .gl-map-host { filter: brightness(.35) saturate(.6); }
+/* Dimmed: only the map underneath fades; the car arrow stays bright and the
+   route is redrawn brighter (CARTO's lines sit above its tiles; Google's are
+   brightened by the page, see setDim). */
+.gl-dim .gl-map-google .gl-map-inner { filter: brightness(.55) saturate(.75); }
+.gl-dim .gl-map-leaflet .leaflet-tile-pane { filter: brightness(.8) contrast(1.05) saturate(.8); }
+.gl-dim .gl-map-google:not(:has(.gl-map-inner)) { filter: brightness(.55) saturate(.75); }
+.gl-dim .gl-map-carfix svg { filter: drop-shadow(0 0 10px rgba(34, 211, 238, 1)); }
 .gl-dim .gl-mapo { background: rgba(0, 0, 0, .6); border-color: transparent; }
 
 /* Round Mix: the six figures as three paired boxes on the left; the map on the right. */
@@ -3390,3 +3396,36 @@ main > .card { max-width: 100%; }
 .gl-mapo-last > div { display: flex; justify-content: space-between; gap: 6px; }
 .gl-mapo-last b.tone-good, .gl-mapo-last b.good { color: var(--green); }
 .gl-mapo-last b.tone-warn, .gl-mapo-last b.warn { color: var(--amber); }
+
+/* The Cockpit's trip computer: pages of four tiles in one cell, each moved by
+   its own height (GL_VSCROLL); two rows in view, dragged a row at a time. */
+.gl-vpages { position: relative; flex: 1 1 auto; min-height: 0; display: grid; overflow: hidden;
+  touch-action: none; cursor: ns-resize; margin-top: 8px; padding-right: 10px; }
+.gl-vpages > .gl-vpage { grid-area: 1 / 1; padding-top: 0; min-height: 0; height: 100%; grid-auto-rows: 1fr;
+  transform: translateY(calc((var(--i) - var(--f) * var(--n)) * (100% + 8px))); will-change: transform; }
+.gl-vpages.glide > .gl-vpage { transition: transform .22s ease-out; }
+.gl-vdots { position: absolute; right: 1px; top: 50%; transform: translateY(-50%); z-index: 2;
+  display: flex; flex-direction: column; gap: 4px; pointer-events: none; }
+.gl-vdots i { width: 4px; height: 4px; border-radius: 50%; background: #2a3646; }
+.gl-vdots i.on { background: #22d3ee; box-shadow: 0 0 6px #22d3ee; height: 10px; border-radius: 3px; }
+.gl-dim .gl-vdots { opacity: .3; }
+
+/* The turning map: Google's map in an inner layer, the car drawn by the page
+   at the centre (the view is always centred on it). */
+.gl-map-inner { position: absolute; inset: 0; }
+.gl-map-carfix { position: absolute; left: 50%; top: 78%; width: 34px; height: 34px; margin: -17px 0 0 -17px; z-index: 5; pointer-events: none; }
+.gl-map-note { position: absolute; left: 50%; top: calc(78% - 44px); transform: translateX(-50%); z-index: 6; white-space: nowrap;
+  font: 600 10px system-ui, sans-serif; letter-spacing: .06em; color: #ffd27a; background: rgba(5, 10, 16, .85);
+  border: 1px solid rgba(255, 210, 122, .35); border-radius: 8px; padding: 2px 8px; }
+
+/* Map design: battery % in the speed box; the bottom row leaves the middle
+   clear for the car. */
+.gl-mapo-batt2 { margin-left: 10px; font: 700 clamp(15px, calc(4.6 * var(--gh, 4px)), 22px)/1 "Chakra Petch", system-ui, sans-serif; color: var(--green); }
+.gl-mapo-batt2.warn { color: var(--amber); }
+.gl-mapo-row { grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(70px, .9fr) repeat(2, minmax(0, 1fr)); }
+.gl-mapo-gap { display: block; }
+
+/* CARTO's map turned to the road ahead: the square turns about the car. */
+.gl-map-rot { position: absolute; inset: auto; transform-origin: 50% 50%; transition: transform .35s linear; will-change: transform; }
+.gl-map-credit { position: absolute; right: 4px; bottom: 2px; z-index: 6; font: 8.5px system-ui, sans-serif; color: #6b7a8e;
+  background: rgba(5, 8, 12, .6); padding: 0 5px; border-radius: 3px; pointer-events: none; }
