@@ -5128,12 +5128,12 @@ function glAutoLive(d) {
 // the others show the same readings differently, each for a different glance:
 // a huge speed, the energy flow, or the trip in big figures. Swipe left or
 // right on the Live page, or tap the dots.
-const GL_SKINS = ["Cockpit", "HUD", "Energy", "Trip", "Night", "Dial", "Range", "Mix", "Round Mix", "Stack", "Lines", "Graph", "Digital Mix", "Power", "Efficiency"];
+const GL_SKINS = ["Cockpit", "HUD", "Energy", "Trip", "Night", "Dial", "Range", "Mix", "Round Mix", "Stack", "Lines", "Graph", "Digital Mix", "Power", "Efficiency", "Map"];
 // Two rows of designs. Up and down: the three GAUGE designs, each with the
 // odometer, a dial or ring and several readings together. Left and right: the
 // rest, one reading or one theme at a time.
 const GL_COMBO = [0, 8, 5];     // Cockpit, Round Mix, Dial
-const GL_SINGLE = [1, 4, 10, 6, 3, 13, 14, 12, 7, 9, 2, 11]; // HUD, Night, Lines, Range, Trip, Power, Efficiency, Digital Mix, Mix, Stack, Energy, Graph
+const GL_SINGLE = [1, 4, 10, 6, 3, 13, 14, 12, 7, 9, 2, 11, 15]; // HUD, Night, Lines, Range, Trip, Power, Efficiency, Digital Mix, Mix, Stack, Energy, Graph, Map
 let glLiveSkin = 0;
 function glSkinSet(id, from) {
   glLiveSkin = GL_SKINS[id] ? id : 0;
@@ -5177,7 +5177,11 @@ function glKeyBar(c) {
     `<span class="gl-kb"><em>Time</em><b>${hh}</b></span>`,
     c.rangeHere != null || c.range != null ? `<span class="gl-kb gl-opt"><em>Range</em><b>${c.n(c.rangeHere != null ? c.rangeHere : c.range)} km</b></span>` : "",
     nw.out_temp != null ? `<span class="gl-kb gl-opt"><em>Outside</em><b>${c.n(nw.out_temp, 0)}°C</b></span>` : "",
-    t && t.eta ? `<span class="gl-kb gl-opt"><em>ETA ${c.h(t.eta.place)}</em><b>${c.n(t.eta.eta_min)} min</b></span>` : "",
+    // The car's own navigation when a destination is set; else the app's
+    // guess at the nearest saved place.
+    c.nav && c.nav.minutes != null
+      ? `<span class="gl-kb gl-opt"><em>Arrive${c.nav.name ? " " + c.h(glNavName(c.nav.name)) : ""}</em><b>${glClockIn(c.nav.minutes)}</b></span>`
+      : t && t.eta ? `<span class="gl-kb gl-opt"><em>ETA ${c.h(t.eta.place)}</em><b>${c.n(t.eta.eta_min)} min</b></span>` : "",
     nw.climate_on != null ? `<span class="gl-kb gl-opt"><em>Climate</em><b>${nw.climate_on ? "on" : "off"}</b></span>` : "",
     // Not on designs that already show it (Energy's tile, Dial's and Round
     // Mix's side bars): the same figure twice on one screen.
@@ -5496,6 +5500,32 @@ function glAltPage(skin, c) {
   // Just after leaving, before the first kilometre, the trip has no Wh/km yet: the last trip's stands in.
   const whk = t ? (tw ?? (lt && lt.wh_per_km)) : lt && lt.wh_per_km;
   const sub = t ? "this drive" : lt ? "last trip" : "";
+  if (skin === 15) {
+    // Map: the car on a dark map, the route the car is navigating drawn on
+    // it, and the drive's figures floating over it. The map itself is one
+    // Leaflet map kept across redraws (glMapMount), set into this slot.
+    const nav = c.nav;
+    const navBox = nav ? `<div class="gl-mapo gl-mapo-nav">
+        <span class="gl-mapo-dest">${h(glNavName(nav.name) || "Navigating")}</span>
+        <div class="gl-mapo-nums">
+          ${nav.minutes != null ? `<b>${glClockIn(nav.minutes)}<small>arrive</small></b><b>${n(nav.minutes)}<small>min</small></b>` : ""}
+          ${nav.km != null ? `<b>${n(nav.km, 1, true)}<small>km</small></b>` : ""}
+          ${nav.arrive_pct != null ? `<b class="${nav.arrive_pct < 15 ? "warn" : "good"}">${n(nav.arrive_pct)}<small>% on arrival</small></b>` : ""}
+        </div>${nav.delay_min >= 1 ? `<em>+${n(nav.delay_min)} min traffic</em>` : ""}</div>`
+      : `<div class="gl-mapo gl-mapo-nav idle"><span class="gl-mapo-dest">No destination</span><em>Set one in the car to see the route</em></div>`;
+    return `<div class="gl-page gl-alt gl-mapd">
+      <div class="gl-map-slot" data-map="full">
+        ${nw.lat == null ? '<div class="gl-map-wait">Waiting for the car\'s location…</div>' : ""}
+        <div class="gl-mapo gl-mapo-spd"><strong style="color:${col}">${num}</strong><small>km/h</small><span class="gl-mapo-gear">${gear}</span></div>
+        ${navBox}
+        <div class="gl-mapo gl-mapo-row">
+          ${stat("km", dist != null ? n(dist, 1, true) : "—")}${stat("min", mins != null ? n(mins) : "—")}
+          ${stat("Wh/km", whk != null ? n(whk, 1, true) : "—", t ? twTone : "")}
+          ${stat("kW", kwShown, kw != null && kw < 0 ? "good" : "")}
+          ${stat("Batt %", pct != null ? n(pct, 1, true) : "—", pct != null && pct < 20 ? "warn" : "")}
+        </div>
+      </div></div>`;
+  }
   if (skin === 1) {
     return `<div class="gl-page gl-alt gl-hud">
       <div class="gl-hud-top"><span class="gl-hud-gear">${gear}</span>${batt}</div>
@@ -5560,10 +5590,19 @@ function glAltPage(skin, c) {
       <span>${label}</span>
       <div class="gl-led-bar"><div class="gl-led-segs">${segs}</div><div class="gl-led-scale">${scale}</div></div>
       <div class="gl-digi" style="--c:${tone}"><i>${ghost}</i><b>${value}</b><small>${unit}</small></div></div>`;
-    return `<div class="gl-page gl-alt gl-dialpage">
+    const nav = c.nav;
+    return `<div class="gl-page gl-alt gl-dialpage gl-dialmap">
       ${led(regen ? "Regen" : "Power", pseg, "88.8", kwShown, "kW", pwTone, "<em>150</em><em>75</em><em>0</em><em>regen</em>")}
       <div class="gl-dialbox">${glLadder("regen", c)}${glGauge3D(spd, col, nw, null, true)}${glLadder("whkm", { ...c, whk })}</div>
-      ${led("Battery", bseg, "888", pct != null ? n(pct, 1, true) : "—", "%", bTone, "<em>100</em><em>75</em><em>50</em><em>25</em><em>0</em>")}
+      <div class="gl-map-slot gl-map-mini gl-dial-map" data-map="mini">
+        ${nw.lat == null ? '<div class="gl-map-wait">Waiting for the car\'s location…</div>' : ""}
+        ${nav ? `<div class="gl-mapo gl-mapo-mini gl-mapo-stack">
+          ${nav.minutes != null ? `<b>${glClockIn(nav.minutes)}<small>${h(glNavName(nav.name) || "arrive")}</small></b>` : ""}
+          ${nav.km != null ? `<b>${n(nav.km, 1, true)}<small>km to go</small></b>` : ""}
+          ${nav.arrive_pct != null ? `<b class="${nav.arrive_pct < 15 ? "warn" : "good"}">${n(nav.arrive_pct)}<small>% arrive</small></b>` : ""}
+        </div>` : ""}
+        <div class="gl-mapo gl-mapo-batt" style="--c:${bTone}"><b>${pct != null ? n(pct, 1, true) : "—"}<small>% batt</small></b></div>
+      </div>
     </div>`;
   }
   if (skin === 6) {
@@ -5677,12 +5716,31 @@ function glAltPage(skin, c) {
     // Round Mix: a round speed ring with the odometer set into it, the trip
     // on its left and power and battery on its right.
     const round = glGauge3D(spd, col, nw, odo, false);
+    // Left: the six figures as three pairs (speed, energy, the trip so far).
+    // Right: the map, with the car's arrival figures over it while navigating.
+    const nav = c.nav;
+    // Each half: a short name, the figure, its unit under it, so two fit
+    // side by side in the column's width.
+    const half = ([name, value, unit]) => `<div><span>${name}</span><strong>${value}<small>${unit}</small></strong></div>`;
+    const pair = (a, b) => `<div class="gl-hud-stat gl-pair">${half(a)}${half(b)}</div>`;
+    const top = t && t.max_speed_kmh != null ? n(t.max_speed_kmh) : lt && lt.max_speed_kmh != null ? n(lt.max_speed_kmh) : "—";
+    const net = t && t.energy_kwh != null ? n(t.energy_kwh, 2) : lt && lt.energy_kwh != null ? n(lt.energy_kwh, 2) : "—";
     return `<div class="gl-page gl-alt gl-rmix">
-      <div class="gl-rmix-col">${stat("km", dist != null ? n(dist, 1, true) : "—")}${stat("min", mins != null ? n(mins) : "—")}${stat("avg km/h", avg != null ? n(avg) : "—")}</div>
+      <div class="gl-rmix-col gl-rmix-pairs">
+        ${pair(["Top", top, "km/h"], ["Avg", avg != null ? n(avg) : "—", "km/h"])}
+        ${pair(["Used", c.usedPct != null ? n(c.usedPct, 2, true) : "—", "% batt"], ["Net", net, "kWh"])}
+        ${pair(["Time", mins != null ? n(mins) : "—", "min"], ["Dist", dist != null ? n(dist, 1, true) : "—", "km"])}
+      </div>
       <div class="gl-rmix-mid">${glLadder("flow", c)}${round}${glLadder("whbat", { ...c, whk })}<span class="gl-gearrow">${["P", "R", "N", "D"].map((x) => `<b class="${nw.shift === x ? "on" : ""}">${x}</b>`).join("")}</span></div>
-      <div class="gl-rmix-col">${stat("batt used %", c.usedPct != null ? n(c.usedPct, 2, true) : "—")}
-        ${stat("net used kWh", t && t.energy_kwh != null ? n(t.energy_kwh, 2) : lt && lt.energy_kwh != null ? n(lt.energy_kwh, 2) : "—")}
-        ${stat("top km/h", t && t.max_speed_kmh != null ? n(t.max_speed_kmh) : lt && lt.max_speed_kmh != null ? n(lt.max_speed_kmh) : "—")}</div>
+      <div class="gl-rmix-col gl-rmix-map">
+        <div class="gl-map-slot gl-map-mini" data-map="mini">
+          ${nw.lat == null ? '<div class="gl-map-wait">Waiting for the car\'s location…</div>' : ""}
+          ${nav ? `<div class="gl-mapo gl-mapo-mini gl-mapo-stack">
+            ${nav.minutes != null ? `<b>${glClockIn(nav.minutes)}<small>${h(glNavName(nav.name) || "arrive")}</small></b>` : ""}
+            ${nav.km != null ? `<b>${n(nav.km, 1, true)}<small>km to go</small></b>` : ""}
+            ${nav.arrive_pct != null ? `<b class="${nav.arrive_pct < 15 ? "warn" : "good"}">${n(nav.arrive_pct)}<small>% arrive</small></b>` : ""}
+          </div>` : ""}
+        </div></div>
     </div>`;
   }
   if (skin === 9) {
@@ -5809,6 +5867,7 @@ function renderGlance(d) {
             return lc.cost != null && lc.energy_added_kwh > 0 ? lc.cost / lc.energy_added_kwh : null;
           })(),
           cur: (lastData && lastData.currency) || "RM",
+          nav: (L && L.nav) || null,
         }), foot };
       }
       if (!t) {
@@ -5835,49 +5894,22 @@ function renderGlance(d) {
             </div>
           </div>`,
           glSpeedo({ value: spd, max: 160, gear: nw.shift, acc: glLiveState.acc, label: "Speed" }),
-          lt ? `<div class="gl-trip">
-            <div class="gl-trip-h">Last trip<em>${lt.id != null ? "#" + lt.id + " · " : ""}${h(tripWhen(lt.start_time).split(" ").pop())}</em></div>
-            <div class="gl-rts">
-              ${tile("dist", "km", n(lt.distance_km, 1, true))}
-              ${tile("time", "min", n(lt.duration_min))}
-              ${tile("speed", "Avg km/h", lt.avg_speed_kmh != null ? n(lt.avg_speed_kmh) : "—")}
-              ${tile("whkm", "Wh/km", n(lt.wh_per_km, 1, true), ltTone)}
-            </div>
-          </div>` : "",
+          // The map of where the car stands, the last trip over it.
+          `<div class="gl-navside"><div class="gl-map-slot gl-map-mini" data-map="mini">
+            ${nw.lat == null ? '<div class="gl-map-wait">Waiting for the car\'s location…</div>' : ""}
+            ${lt ? `<div class="gl-mapo gl-mapo-mini gl-mapo-last">
+              <em>Last trip${lt.id != null ? " #" + lt.id : ""} · ${h(tripWhen(lt.start_time).split(" ").pop())}</em>
+              <div><b>${n(lt.distance_km, 1, true)}<small>km</small></b><b>${n(lt.duration_min)}<small>min</small></b>
+              <b>${lt.avg_speed_kmh != null ? n(lt.avg_speed_kmh) : "—"}<small>avg km/h</small></b>
+              <b class="${ltTone}">${n(lt.wh_per_km, 1, true)}<small>Wh/km</small></b></div>
+            </div>` : ""}
+          </div></div>`,
           foot);
       }
       // Energy over distance, as the car's "Current Drive" shows it.
       const tw = t.wh_per_km ?? t.driving_wh_per_km;
-      // Left: a trip computer of icon tiles. Right: a power meter, a trace of
-      // the last few minutes and a battery bar, so neither side repeats the
-      // Drive page's LED meters.
+      // Left: a trip computer of icon tiles. Right: the map and the battery bar.
       const kw = inst && inst.kw != null ? inst.kw : null;
-      // How far the energy left would go at this drive's Wh/km, beside the
-      // car's own rated figure; and what braking has put back this drive.
-      const rangeHere = nw.energy_kwh != null && tw > 0 ? nw.energy_kwh * 1000 / tw : null;
-      const regenPct = t.regen_kwh > 0 && t.energy_kwh > 0
-        ? t.regen_kwh / (t.energy_kwh + t.regen_kwh) * 100 : null;
-      const kwMin = -60, kwMax = 150, zero = -kwMin / (kwMax - kwMin) * 100;
-      const kwPos = kw == null ? null : Math.max(0, Math.min(100, (kw - kwMin) / (kwMax - kwMin) * 100));
-      const packKwh0 = lastData && lastData.vehicle && lastData.vehicle.usable_capacity_kwh;
-      const usedPct0 = Math.max(+t.soc_used || 0, packKwh0 && t.energy_kwh > 0 ? t.energy_kwh / packKwh0 * 100 : 0);
-      const powerBar = `<div class="gl-power">
-          <div class="gl-power-top"><span>${kw != null && kw < 0 ? "Regen" : "Power"}</span>
-            <strong class="${kw != null && kw < 0 ? "regen" : ""}">${kw == null ? "—" : n(Math.abs(kw), 1)}<small>kW</small></strong></div>
-          <div class="gl-power-track">
-            ${kwPos == null ? "" : `<i class="gl-power-fill ${kw < 0 ? "regen" : kw > 60 ? "hard" : ""}"
-              style="left:${Math.min(zero, kwPos).toFixed(1)}%;width:${Math.abs(kwPos - zero).toFixed(1)}%"></i>`}
-            <b style="left:${zero.toFixed(1)}%"></b></div>
-          <div class="gl-power-scale"><span>regen</span><span>0</span><span>${kwMax} kW</span></div>
-          <div class="gl-minis">
-            <div class="gl-mini"><span data-short="Batt">Batt used</span>
-              <div><strong>${n(usedPct0, 2, true)}<small>%</small></strong>
-              <em>${t.regen_kwh != null ? `regen ${n(t.regen_kwh, 2)}` : ""}</em></div></div>
-            <div class="gl-mini regen"><span data-short="Net use">Net use</span>
-              <div><strong>${t.energy_kwh != null ? n(t.energy_kwh, 2) : "—"}<small>kWh</small></strong>
-              <em>${regenPct != null ? `${n(regenPct)}% back` : ""}</em></div></div>
-          </div>
-        </div>`;
       // The car's battery % moves in whole steps, which barely register on a short
       // drive: take the larger of that and the energy used over the pack size.
       const packKwh = lastData && lastData.vehicle && lastData.vehicle.usable_capacity_kwh;
@@ -5888,23 +5920,37 @@ function renderGlance(d) {
           <div class="gl-power-sub">used ${n(usedPct, 2, true)}% this drive · ${n(t.energy_kwh, 2)} kWh</div></div>`;
       const twTone = rated && tw ? (tw > rated ? "warn" : "good") : "";
       const odoNow = nw.odo_km ?? (lastData && lastData.vehicle && lastData.vehicle.current_odo_km);
-      return page(
-        `<div class="gl-trip">
-          <div class="gl-trip-h"><b class="rec"></b>Trip computer<em>since ${h(String(tripWhen(t.start_time) || "").split(" ").pop())}</em></div>
-          <div class="gl-rts">
-            ${tile("dist", "km", n(t.distance_km, 1, true))}
-            ${tile("time", "min", n(t.duration_min))}
-            ${tile("speed", "Avg km/h", n(t.avg_speed_kmh))}
-            ${tile("speed", "Max km/h", t.max_speed_kmh != null ? n(t.max_speed_kmh) : "—", "")}
-          </div>
-          <div class="gl-odo"><span>Odo km</span>
-            <strong>${odoNow != null ? n(odoNow, 1) : "—"}</strong></div>
-        </div>`,
-        glSpeedo({ value: spd, max: 160, mark: t.max_speed_kmh, gear: nw.shift, acc: glLiveState.acc, label: "Speed" }),
-        `${powerBar}
-         ${tw != null ? glWhBar(tw, rated, glLiveState.maxWh, "trip") : glWhBar(inst && inst.whkm != null ? inst.whkm : null, rated, glLiveState.maxWh)}
-         ${battBar}`,
-        foot);
+      // The right side is a small map following the car (the route and the
+      // car's arrival figures on it while navigating), the battery bar under
+      // it. The drive's Wh/km takes the Max km/h tile's place on the left,
+      // and the power sits on the map.
+      const navC = L && L.nav;
+      {
+        const mini = `<div class="gl-map-slot gl-map-mini" data-map="mini">
+            ${nw.lat == null ? '<div class="gl-map-wait">Waiting for the car\'s location…</div>' : ""}
+            ${navC ? `<div class="gl-mapo gl-mapo-mini">
+              ${navC.minutes != null ? `<b>${glClockIn(navC.minutes)}<small>${h(glNavName(navC.name) || "arrive")}</small></b>` : ""}
+              ${navC.km != null ? `<b>${n(navC.km, 1, true)}<small>km</small></b>` : ""}
+              ${navC.arrive_pct != null ? `<b class="${navC.arrive_pct < 15 ? "warn" : "good"}">${n(navC.arrive_pct)}<small>% arrive</small></b>` : ""}
+            </div>` : ""}
+            <div class="gl-mapo gl-mapo-kw ${kw != null && kw < 0 ? "regen" : ""}">${kw == null ? "—" : n(Math.abs(kw), 1)}<small>kW</small></div>
+          </div>`;
+        return page(
+          `<div class="gl-trip">
+            <div class="gl-trip-h"><b class="rec"></b>Trip computer<em>since ${h(String(tripWhen(t.start_time) || "").split(" ").pop())}</em></div>
+            <div class="gl-rts">
+              ${tile("dist", "km", n(t.distance_km, 1, true))}
+              ${tile("time", "min", n(t.duration_min))}
+              ${tile("speed", "Avg km/h", n(t.avg_speed_kmh))}
+              ${tile("whkm", "Wh/km", tw != null ? n(tw, 1, true) : "—", twTone)}
+            </div>
+            <div class="gl-odo"><span>Odo km</span>
+              <strong>${odoNow != null ? n(odoNow, 1) : "—"}</strong></div>
+          </div>`,
+          glSpeedo({ value: spd, max: 160, mark: t.max_speed_kmh, gear: nw.shift, acc: glLiveState.acc, label: "Speed" }),
+          `<div class="gl-navside">${mini}${battBar}</div>`,
+          foot);
+      }
     },
     // Drive: boxes, the Wh/km dial, and how the distance splits by speed.
     drive: () => {
@@ -6085,7 +6131,263 @@ function renderGlance(d) {
     <div class="gl-body">${rail}${pg.body}</div>
     ${pg.foot ? `<div class="gl-foot">${pg.foot}</div>` : ""}</div>`;
   glFit(el);
+  glMapMount(el);
 }
+
+// The Live page's map. One map for the whole session, made the first time a
+// page asks for one and moved into each redraw's slot: the page is rebuilt up
+// to five times a second, and a map rebuilt that often would reload its tiles
+// every time (and, with Google, count as a new map load each time). Two
+// engines draw it: Google Maps in a dark style with live traffic when the
+// server has a Google Maps key (GOOGLE_MAPS_KEY), else Leaflet with CARTO's
+// dark tiles. Google failing (a bad key, no network to it) falls back to
+// CARTO. Either library loads only when a map is first on screen, and the
+// map takes no touches, so a swipe over it still changes the design.
+const GL_MAP = { host: null, eng: null, kind: null, cfg: undefined, cfgAsked: false, gFailed: false,
+  loading: {}, routeV: null, routeAsk: null, route: null, zoomKey: null };
+const GL_MAP_TILES = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
+function glNavName(name) {
+  // The car sends the full address; the first part is the place.
+  return name ? String(name).split(",")[0].trim().slice(0, 40) : "";
+}
+function glClockIn(min) {
+  const t = new Date(Date.now() + (+min || 0) * 60000);
+  return String(t.getHours()).padStart(2, "0") + ":" + String(t.getMinutes()).padStart(2, "0");
+}
+const glMapRedraw = () => { if (lastData && glanceTab === "live" && glanceVisible()) renderGlance(lastData); };
+function glMapScript(id, src, css) {
+  if (GL_MAP.loading[id]) return;
+  GL_MAP.loading[id] = true;
+  if (css) {
+    const l = document.createElement("link");
+    l.rel = "stylesheet"; l.href = css;
+    document.head.appendChild(l);
+  }
+  const js = document.createElement("script");
+  js.src = src; js.async = true;
+  js.onload = glMapRedraw;
+  js.onerror = () => {
+    GL_MAP.loading[id] = false;
+    if (id === "google") glMapGoogleFailed();
+  };
+  document.head.appendChild(js);
+}
+function glMapGoogleFailed() {
+  // A refused key (Google calls gm_authFailure) or no script: CARTO instead,
+  // for the rest of this visit.
+  if (GL_MAP.gFailed) return;
+  GL_MAP.gFailed = true;
+  if (GL_MAP.kind === "google") {
+    if (GL_MAP.host) GL_MAP.host.remove();
+    GL_MAP.host = null; GL_MAP.eng = null; GL_MAP.kind = null; GL_MAP.zoomKey = null; GL_MAP.routeV = null;
+  }
+  glMapRedraw();
+}
+window.gm_authFailure = glMapGoogleFailed;
+// Which engine, once the server has said whether it has a Google key; null
+// while that question or the library is still on its way.
+function glMapReady() {
+  if (GL_MAP.cfg === undefined) {
+    if (!GL_MAP.cfgAsked) {
+      GL_MAP.cfgAsked = true;
+      fetch("/api/map-config", { credentials: "same-origin" }).then((r) => (r.ok ? r.json() : {}))
+        .catch(() => ({})).then((c) => { GL_MAP.cfg = c || {}; glMapRedraw(); });
+    }
+    return null;
+  }
+  if (GL_MAP.cfg.google_key && !GL_MAP.gFailed) {
+    if (window.google && window.google.maps && window.google.maps.Map) return "google";
+    glMapScript("google", "https://maps.googleapis.com/maps/api/js?v=weekly&key="
+      + encodeURIComponent(GL_MAP.cfg.google_key) + "&language=en&region=MY");
+    return null;
+  }
+  if (window.L && window.L.map) return "leaflet";
+  glMapScript("leaflet", "/static/vendor/leaflet.js", "/static/vendor/leaflet.css");
+  return null;
+}
+// Google's dark "night" style, quieter: the car's map at night.
+const GL_GMAP_NIGHT = [
+  { elementType: "geometry", stylers: [{ color: "#1b2129" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#9aa7b8" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#11161c" }] },
+  { featureType: "administrative.locality", elementType: "labels.text.fill", stylers: [{ color: "#c4ced9" }] },
+  { featureType: "poi", elementType: "labels.text.fill", stylers: [{ color: "#7d8a99" }] },
+  { featureType: "poi.park", elementType: "geometry", stylers: [{ color: "#17271f" }] },
+  { featureType: "poi.park", elementType: "labels.text.fill", stylers: [{ color: "#5f8a6d" }] },
+  { featureType: "road", elementType: "geometry", stylers: [{ color: "#323c48" }] },
+  { featureType: "road", elementType: "geometry.stroke", stylers: [{ color: "#1d242c" }] },
+  { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#a9b6c6" }] },
+  { featureType: "road.highway", elementType: "geometry", stylers: [{ color: "#4a5768" }] },
+  { featureType: "road.highway", elementType: "geometry.stroke", stylers: [{ color: "#232b35" }] },
+  { featureType: "road.highway", elementType: "labels.text.fill", stylers: [{ color: "#d3dce6" }] },
+  { featureType: "transit", elementType: "geometry", stylers: [{ color: "#252d37" }] },
+  { featureType: "transit.station", elementType: "labels.text.fill", stylers: [{ color: "#8f9cad" }] },
+  { featureType: "water", elementType: "geometry", stylers: [{ color: "#0d1b2a" }] },
+  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#4e6a86" }] },
+];
+const GL_CAR_ARROW = "M0,-11 L8,9 L0,4 L-8,9 Z";
+function glMapGoogle(host) {
+  const g = window.google.maps;
+  const map = new g.Map(host, { center: { lat: 3.14, lng: 101.69 }, zoom: 3, disableDefaultUI: true,
+    gestureHandling: "none", keyboardShortcuts: false, clickableIcons: false, backgroundColor: "#11161c",
+    styles: GL_GMAP_NIGHT });
+  // Live traffic on every road, the route included: green, orange, red.
+  new g.TrafficLayer().setMap(map);
+  let car = null, dest = null, line = null, lastHd;
+  const ll = (p) => ({ lat: p[0], lng: p[1] });
+  return {
+    setRoute(pts) {
+      if (!pts || !pts.length) { if (line) { line.setMap(null); line = null; } return; }
+      // Wide and translucent, so the traffic colours on the road show through.
+      if (!line) line = new g.Polyline({ map, clickable: false, strokeColor: "#22d3ee", strokeOpacity: 0.4, strokeWeight: 11, zIndex: 1 });
+      line.setPath(pts.map(ll));
+    },
+    setDest(p) {
+      if (!p) { if (dest) { dest.setMap(null); dest = null; } return; }
+      if (!dest) dest = new g.Marker({ map, clickable: false, zIndex: 900, icon: { path: g.SymbolPath.CIRCLE, scale: 8,
+        fillColor: "#ff3b6b", fillOpacity: 1, strokeColor: "#ffffff", strokeWeight: 2 } });
+      dest.setPosition(ll(p));
+    },
+    setCar(p, hd) {
+      if (!car) car = new g.Marker({ map, clickable: false, zIndex: 1000 });
+      car.setPosition(ll(p));
+      const key = hd == null ? null : Math.round(hd);
+      if (key !== lastHd || !car.getIcon()) {
+        lastHd = key;
+        car.setIcon(hd == null
+          ? { path: g.SymbolPath.CIRCLE, scale: 8, fillColor: "#22d3ee", fillOpacity: 1, strokeColor: "#e8fbff", strokeWeight: 2 }
+          : { path: GL_CAR_ARROW, scale: 1.4, rotation: hd, fillColor: "#e8fbff", fillOpacity: 1,
+            strokeColor: "#22d3ee", strokeWeight: 2, anchor: new g.Point(0, 0) });
+      }
+    },
+    jump(p, z) { map.setZoom(z); map.setCenter(ll(p)); },
+    follow(p) { map.panTo(ll(p)); },
+    resize() {},
+  };
+}
+function glMapLeaflet(host) {
+  const L = window.L;
+  const map = L.map(host, { zoomControl: false, dragging: false, touchZoom: false, scrollWheelZoom: false,
+    doubleClickZoom: false, boxZoom: false, keyboard: false, tap: false, fadeAnimation: false,
+    attributionControl: true });
+  map.attributionControl.setPrefix(false);
+  // {r} asks CARTO for its sharp @2x tiles on a high-density screen, at the
+  // normal label size (detectRetina would also step the zoom up a level,
+  // shrinking every street name to half size).
+  L.tileLayer(GL_MAP_TILES, { subdomains: "abcd", maxZoom: 20, maxNativeZoom: 20, detectRetina: false,
+    attribution: "© OpenStreetMap contributors © CARTO" }).addTo(map);
+  map.setView([0, 0], 2);
+  let car = null, dest = null, line = null;
+  return {
+    setRoute(pts) {
+      if (!pts || !pts.length) { if (line) { line.remove(); line = null; } return; }
+      if (!line) line = L.polyline([], { color: "#22d3ee", weight: 6, opacity: 0.85, interactive: false }).addTo(map);
+      line.setLatLngs(pts);
+    },
+    setDest(p) {
+      if (!p) { if (dest) { dest.remove(); dest = null; } return; }
+      if (!dest) dest = L.marker(p, { interactive: false, keyboard: false,
+        icon: L.divIcon({ className: "gl-map-dest", iconSize: [18, 18], iconAnchor: [9, 9], html: "<b></b>" }) }).addTo(map);
+      else dest.setLatLng(p);
+    },
+    setCar(p, hd) {
+      if (!car) {
+        car = L.marker(p, { interactive: false, keyboard: false, zIndexOffset: 1000,
+          icon: L.divIcon({ className: "gl-map-car", iconSize: [34, 34], iconAnchor: [17, 17],
+            html: '<svg viewBox="0 0 34 34" aria-hidden="true"><circle cx="17" cy="17" r="15"/><path d="M17 6 25 26 17 21 9 26Z"/></svg>' }) }).addTo(map);
+      } else car.setLatLng(p);
+      const svg = car.getElement() && car.getElement().querySelector("svg");
+      if (svg) {
+        svg.style.transform = hd != null ? `rotate(${hd}deg)` : "";
+        svg.classList.toggle("nohd", hd == null);
+      }
+    },
+    jump(p, z) { map.setView(p, z, { animate: false }); },
+    follow(p) {
+      const dx = map.latLngToContainerPoint(p).distanceTo(map.getSize().divideBy(2));
+      if (dx > 1) map.panTo(p, { animate: dx < 400, duration: 0.2, easeLinearity: 1, noMoveStart: true });
+    },
+    resize() {
+      const sz = map.getSize();
+      if (sz.x !== host.clientWidth || sz.y !== host.clientHeight) map.invalidateSize(false);
+    },
+  };
+}
+function glMapMount(root) {
+  const slot = root && root.querySelector(".gl-map-slot");
+  if (!slot) return;
+  const kind = glMapReady();
+  if (!kind) return;
+  if (!GL_MAP.eng || GL_MAP.kind !== kind) {
+    if (GL_MAP.host) GL_MAP.host.remove();
+    const host = document.createElement("div");
+    host.className = "gl-map-host gl-map-" + kind;
+    slot.prepend(host);
+    GL_MAP.host = host; GL_MAP.kind = kind; GL_MAP.zoomKey = null; GL_MAP.routeV = null; GL_MAP.routeAsk = null;
+    GL_MAP.eng = kind === "google" ? glMapGoogle(host) : glMapLeaflet(host);
+    if (GL_MAP.route) GL_MAP.eng.setRoute(GL_MAP.route.points);
+  } else {
+    slot.prepend(GL_MAP.host);
+  }
+  GL_MAP.eng.resize();
+  glMapUpdate(slot.dataset.map || "full");
+}
+function glMapUpdate(mode) {
+  const eng = GL_MAP.eng, D = glLiveState.data;
+  if (!eng || !D) return;
+  const nw = D.now || {}, nav = D.nav;
+  // The route: fetched again only when the car's route changes.
+  const rv = nav && nav.route_v;
+  if (rv !== GL_MAP.routeV && GL_MAP.routeAsk !== rv) {
+    GL_MAP.routeAsk = rv;
+    if (!rv) {
+      eng.setRoute(null);
+      GL_MAP.routeV = null; GL_MAP.route = null;
+    } else {
+      fetch("/api/live/route?" + new URLSearchParams(D.vin ? { vin: D.vin } : {}), { credentials: "same-origin" })
+        .then((r) => (r.ok ? r.json() : null)).then((r) => {
+          if (!r || r.v !== GL_MAP.routeAsk || !GL_MAP.eng) return;
+          GL_MAP.routeV = r.v; GL_MAP.route = r;
+          GL_MAP.eng.setRoute(r.points || []);
+        }).catch(() => { GL_MAP.routeAsk = null; });
+    }
+  }
+  eng.setDest(nav && nav.dest_lat != null ? [nav.dest_lat, nav.dest_lon] : null);
+  if (nw.lat == null) {
+    if (nav && nav.dest_lat != null && GL_MAP.zoomKey !== "dest") { eng.jump([nav.dest_lat, nav.dest_lon], 13); GL_MAP.zoomKey = "dest"; }
+    return;
+  }
+  // The car: an arrow pointing the way it is heading. Between the car's
+  // fixes (one a second) it moves on at the car's speed along its heading,
+  // for at most 1.5 s, so the map glides instead of stepping.
+  let pos = [nw.lat, nw.lon];
+  const fixAt = (glLiveState.recvAt || Date.now()) - (+nw.loc_age_sec || 0) * 1000;
+  const ahead = Math.min(Math.max((Date.now() - fixAt) / 1000, 0), 1.5);
+  if (nw.heading != null && +nw.speed_kmh > 3 && ahead > 0 && (+nw.loc_age_sec || 0) < 5) {
+    const m = (+nw.speed_kmh / 3.6) * ahead, rad = nw.heading * Math.PI / 180;
+    pos = [nw.lat + (m * Math.cos(rad)) / 111320,
+      nw.lon + (m * Math.sin(rad)) / (111320 * Math.cos(nw.lat * Math.PI / 180))];
+  }
+  eng.setCar(pos, nw.heading != null ? +nw.heading : null);
+  // Follow the car, closer in town and further out on the highway; the zoom
+  // changes only when the speed crosses a band, so it does not breathe.
+  const v = +nw.speed_kmh || 0;
+  const z = v < 35 ? 17 : v < 70 ? 16 : v < 100 ? 15 : 14;
+  const key = mode + z;
+  if (key !== GL_MAP.zoomKey) {
+    GL_MAP.zoomKey = key;
+    eng.jump(pos, z);
+  } else eng.follow(pos);
+}
+// Five steps a second between redraws while a map is on screen and the car
+// is moving: only the arrow and the view move, nothing is rebuilt.
+setInterval(() => {
+  const D = glLiveState.data, nw = D && D.now;
+  if (!GL_MAP.eng || !GL_MAP.host || !GL_MAP.host.isConnected || document.hidden
+    || !nw || !(+nw.speed_kmh > 3)) return;
+  const slot = GL_MAP.host.parentElement;
+  glMapUpdate((slot && slot.dataset.map) || "full");
+}, 200);
 
 // Shrink to fit: any figure or heading wider than the box it sits in gets a
 // smaller font until it fits (down to 8 px), so no phone size clips a number or

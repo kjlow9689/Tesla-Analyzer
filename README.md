@@ -313,6 +313,68 @@ arrived 36 minutes late and rebuilt to within 0.4%), but once it has handed a
 record over it will never send it again, so a batch dropped between the bridge
 and the app is gone in a way no other failure here is.
 
+### Live map
+
+The Live page has a **Map** design (swipe left or right to it): the car as an
+arrow on a dark map, following it, with the speed, this drive's km, minutes,
+Wh/km, power and battery floating over it. When a destination is set in the
+car, the route the car is navigating is drawn, with the destination, the
+arrival time, minutes and km to go and the battery % the car expects on
+arrival. The Cockpit's right-hand side is a small map at all times: driving,
+with the power on it and the battery bar under it (the drive's Wh/km is in the
+left tiles); parked, with the last trip over it. Round Mix
+keeps a map in its right-hand column at all times; its six figures sit on the
+left as three paired boxes: top and average km/h, battery used % and net kWh,
+time and distance. Dial has the map where its Battery bar was, with the
+battery % on the map in the bar's colours.
+
+All of it is the car's own navigation, streamed: `Location` and `GpsHeading`
+every second, and `DestinationName`, `DestinationLocation`, `MinutesToArrival`,
+`MilesToArrival`, `RouteLine` (a base64 polyline, precision 6),
+`RouteTrafficMinutesDelay` and `ExpectedEnergyPercentAtTripArrival`. The car
+sends each as invalid when the route ends, which clears it; a destination not
+refreshed for 30 minutes is dropped. `RouteLine` and `GpsHeading` are
+live-only, never stored, and the stored history keeps `Location` at 30 s.
+
+To turn it on for a car set up before this, update the bridge and re-send the
+configuration on the relay VM:
+
+```bash
+sudo curl -sL $APP_URL/scripts/telemetry/bridge.py -o /opt/tesla-bridge/bridge.py && sudo systemctl restart tesla-bridge
+curl -sL $APP_URL/car -o c.sh && sudo bash c.sh
+```
+
+**Refresh:** the car's position arrives every second; between fixes the
+arrow and the view glide on at the car's speed and heading (five steps a
+second, at most 1.5 s ahead), so the map moves smoothly. The car sends minutes
+and miles to arrival every 10 s at best; between them the km to go counts
+down with the odometer and the minutes with the clock.
+
+**Google Maps with live traffic** (optional, closest to the car's own map):
+set `GOOGLE_MAPS_KEY` in Render and the map is Google's, in a dark night
+style, with Google's live traffic colours on every road (the route line is
+drawn wide and translucent so the traffic shows through it). To get a key:
+
+1. Google Cloud console → pick or create a project → **APIs & Services →
+   Library** → enable **Maps JavaScript API**. Google asks for a billing
+   account; a personal dashboard is one map load per opening of the Live
+   page, inside Google's free monthly allowance.
+2. **APIs & Services → Credentials → Create credentials → API key**.
+3. Edit the key: **Application restrictions → Websites**, add
+   `https://evperkm.xyz/*` (and your onrender.com address if you use it);
+   **API restrictions → Restrict key → Maps JavaScript API**. Save.
+4. Render → the service → **Environment** → add `GOOGLE_MAPS_KEY` = the key →
+   save (Render redeploys).
+
+The key reaches the browser (that is how Google's maps work), which is why it
+is restricted to this site. Without a key, or if Google refuses it or cannot
+be reached, the map falls back to CARTO by itself.
+
+Without Google, tiles are CARTO's dark basemap (OpenStreetMap data), its sharp @2x tiles on a
+high-density screen, lifted in brightness so streets and names read in a car,
+loaded only when a map is on screen; the map takes no touches, so a swipe over it still changes the
+design. Leaflet is served from `app/static/vendor/`.
+
 ### Setting it up
 
 Two scripts, plus one step only a human with a phone can do. Both are
