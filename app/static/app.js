@@ -5503,8 +5503,7 @@ function glAltPage(skin, c) {
           ${nav.arrive_pct != null ? `<b class="${nav.arrive_pct < 15 ? "warn" : "good"}">${n(nav.arrive_pct)}<small>% on arrival</small></b>` : ""}
         </div>${nav.delay_min >= 1 ? `<em>+${n(nav.delay_min)} min traffic</em>` : ""}</div>`
       : `<div class="gl-mapo gl-mapo-nav idle"><span class="gl-mapo-dest">No destination</span><em>Set one in the car to see the route</em></div>`;
-    return `<div class="gl-page gl-alt gl-mapd">
-      <div class="gl-map-slot" data-map="full">
+    const mapSlot = `<div class="gl-map-slot" data-map="full">
         ${nw.lat == null ? '<div class="gl-map-wait">Waiting for the car\'s location…</div>' : ""}
         <div class="gl-mapo gl-mapo-spd"><strong style="color:${col}">${num}</strong><small>km/h</small><span class="gl-mapo-gear">${gear}</span>
           <span class="gl-mapo-batt2 ${pct != null && pct < 20 ? "warn" : ""}">${pct != null ? n(pct, 1, true) : "—"}<small>%</small></span></div>
@@ -5516,7 +5515,8 @@ function glAltPage(skin, c) {
           ${stat("Wh/km", whk != null ? n(whk, 1, true) : "—", t ? twTone : "")}
           ${stat("kW", kwShown, kw != null && kw < 0 ? "good" : "")}
         </div>
-      </div></div>`;
+      </div>`;
+    return `<div class="gl-page gl-alt gl-mapd">${glMapArea("map", mapSlot, { ...c, nav, n })}</div>`;
   }
   if (skin === 1) {
     return `<div class="gl-page gl-alt gl-hud">
@@ -5581,7 +5581,7 @@ function glAltPage(skin, c) {
     return `<div class="gl-page gl-alt gl-dialpage gl-dialmap">
       ${led(regen ? "Regen" : "Power", pseg, "88.8", kwShown, "kW", pwTone, "<em>150</em><em>75</em><em>0</em><em>regen</em>")}
       <div class="gl-dialbox">${glLadder("regen", c)}${glGauge3D(spd, col, nw, null, true)}${glLadder("whkm", { ...c, whk })}</div>
-      <div class="gl-map-slot gl-map-mini gl-dial-map" data-map="mini">
+${glMapArea("dial", `<div class="gl-map-slot gl-map-mini gl-dial-map" data-map="mini">
         ${nw.lat == null ? '<div class="gl-map-wait">Waiting for the car\'s location…</div>' : ""}
         ${nav ? `<div class="gl-mapo gl-mapo-mini gl-mapo-stack">
           ${nav.minutes != null ? `<b>${glClockIn(nav.minutes)}<small>${h(glNavName(nav.name) || "arrive")}</small></b>` : ""}
@@ -5589,7 +5589,7 @@ function glAltPage(skin, c) {
           ${nav.arrive_pct != null ? `<b class="${nav.arrive_pct < 15 ? "warn" : "good"}">${n(nav.arrive_pct)}<small>% arrive</small></b>` : ""}
         </div>` : ""}
         <div class="gl-mapo gl-mapo-batt" style="--c:${bTone}"><b>${pct != null ? n(pct, 1, true) : "—"}<small>% batt</small></b></div>
-      </div>
+      </div>`, { ...c, nav, n })}
     </div>`;
   }
   if (skin === 6) {
@@ -5720,14 +5720,14 @@ function glAltPage(skin, c) {
       </div>
       <div class="gl-rmix-mid">${glLadder("flow", c)}${round}${glLadder("whbat", { ...c, whk })}<span class="gl-gearrow">${["P", "R", "N", "D"].map((x) => `<b class="${nw.shift === x ? "on" : ""}">${x}</b>`).join("")}</span></div>
       <div class="gl-rmix-col gl-rmix-map">
-        <div class="gl-map-slot gl-map-mini" data-map="mini">
+${glMapArea("rmix", `<div class="gl-map-slot gl-map-mini" data-map="mini">
           ${nw.lat == null ? '<div class="gl-map-wait">Waiting for the car\'s location…</div>' : ""}
           ${nav ? `<div class="gl-mapo gl-mapo-mini gl-mapo-stack">
             ${nav.minutes != null ? `<b>${glClockIn(nav.minutes)}<small>${h(glNavName(nav.name) || "arrive")}</small></b>` : ""}
             ${nav.km != null ? `<b>${n(nav.km, 1, true)}<small>km to go</small></b>` : ""}
             ${nav.arrive_pct != null ? `<b class="${nav.arrive_pct < 15 ? "warn" : "good"}">${n(nav.arrive_pct)}<small>% arrive</small></b>` : ""}
           </div>` : ""}
-        </div></div>
+        </div>`, { ...c, nav, n })}</div>
     </div>`;
   }
   if (skin === 9) {
@@ -5765,6 +5765,66 @@ const glSave = (k, v) => { try { localStorage.setItem(k, v); } catch (_) { /* pr
 let glanceTab = glPref("glanceTab", "drive");
 glLiveSkin = GL_SKINS[+glPref("glLiveSkin", "0")] ? +glPref("glLiveSkin", "0") : 0;
 
+// Map or numbers. In each design with a map, the map's box flips (a swipe up
+// or down on it, or its small button) to the figures alone: the destination,
+// arrival, km and minutes to go and the battery on arrival, then the trip.
+// While the figures show, the map is not on the page at all, so it draws
+// nothing (most of a map design's work on the phone); flipping back puts it
+// straight onto the car. Each design keeps the view it was left on.
+const GL_MAPVIEW = (() => { try { return JSON.parse(glPref("glMapView", "{}")) || {}; } catch (_) { return {}; } })();
+function glMapIsNums(key) { return GL_MAPVIEW[key] === "nums"; }
+document.addEventListener("click", (e) => {
+  const b = e.target.closest && e.target.closest("[data-mapflip-btn]");
+  if (b) { e.preventDefault(); glMapFlip(b.dataset.mapflipBtn); }
+});
+function glMapFlip(key) {
+  GL_MAPVIEW[key] = glMapIsNums(key) ? "map" : "nums";
+  glSave("glMapView", JSON.stringify(GL_MAPVIEW));
+  if (lastData) renderGlance(lastData);
+}
+// The map's box as given, with its flip button; or, flipped, the figures in a
+// box of the same classes (so the same size and place).
+function glMapArea(key, slot, o) {
+  const btn = (nums) => `<button type="button" class="gl-flip" data-mapflip-btn="${key}" aria-label="${nums ? "Show the map" : "Show the figures"}">${nums ? "Map" : "123"}</button>`;
+  if (!glMapIsNums(key)) {
+    const at = slot.indexOf('<div class="gl-map-slot');
+    const end = slot.indexOf(">", at);
+    return slot.slice(0, at) + slot.slice(at, end).replace('<div class="gl-map-slot', `<div data-mapflip="${key}" class="gl-map-slot`)
+      + ">" + btn(false) + slot.slice(end + 1);
+  }
+  const cls = (slot.match(/<div class="(gl-map-slot[^"]*)"/) || [, "gl-map-slot"])[1];
+  return `<div class="${cls} gl-numsv" data-mapflip="${key}">${btn(true)}${glNumsView(o, cls.includes("gl-map-mini"))}</div>`;
+}
+function glNumsView(o, mini) {
+  const { nav, t, lt, kw, pct, tw, n, spd, nw, navOnly } = o;
+  const dist = t ? t.distance_km : lt && lt.distance_km;
+  const mins = t ? t.duration_min : lt && lt.duration_min;
+  const avg = t ? t.avg_speed_kmh : lt && lt.avg_speed_kmh;
+  const whk = t ? (tw ?? (lt && lt.wh_per_km)) : lt && lt.wh_per_km;
+  const v = (x, dp, fixed) => (x == null ? "—" : n(x, dp, fixed));
+  const fig = (val, unit, tone = "") => `<b class="${tone}">${val}<small>${unit}</small></b>`;
+  const navBlock = nav ? `<div class="gl-nv-nav">
+      <em>${h(glNavName(nav.name) || "Navigating")}</em>
+      <div class="gl-nv-row">
+        ${nav.minutes != null ? fig(glClockIn(nav.minutes), "arrive") + fig(v(nav.minutes), "min") : ""}
+        ${nav.km != null ? fig(v(nav.km, 1, true), "km to go") : ""}
+        ${nav.arrive_pct != null ? fig(v(nav.arrive_pct), "% on arrival", nav.arrive_pct < 15 ? "warn" : "good") : ""}
+      </div>${nav.delay_min >= 1 ? `<span class="gl-nv-delay">+${v(nav.delay_min)} min traffic</span>` : ""}</div>` : "";
+  const trip = [
+    fig(v(dist, 1, true), "km"), fig(v(mins), "min"),
+    ...(mini && nav ? [] : [fig(v(avg), "avg km/h")]),
+    fig(v(whk, 1, true), "Wh/km"),
+    ...(mini && nav ? [] : [fig(kw == null ? "—" : n(Math.abs(kw), 1), kw != null && kw < 0 ? "regen kW" : "kW", kw != null && kw < 0 ? "good" : "")]),
+    fig(v(pct, 1, true), "% batt", pct != null && pct < 20 ? "warn" : ""),
+  ].join("");
+  // The Map design has its speed on the map: shown here when flipped.
+  const speed = !mini && nw ? `<div class="gl-nv-spd" style="color:${spd != null && spd > 0.5 ? glSkinColour(spd) : "#e8fbff"}">${spd != null ? Math.round(spd) : "—"}<small>km/h</small>
+    <span class="gl-mapo-gear">${["P", "R", "N", "D"].map((g) => `<b class="${nw.shift === g ? "on" : ""}">${g}</b>`).join("")}</span></div>` : "";
+  // The Cockpit shows the trip and battery beside its map already: navigating,
+  // its figures are the route's alone.
+  if (navOnly && navBlock) return navBlock;
+  return `${speed}${navBlock}<div class="gl-nv-trip">${trip}</div>`;
+}
 function renderGlance(d) {
   const el = document.getElementById("glance");
   if (!el || !d) return;
@@ -5885,7 +5945,7 @@ function renderGlance(d) {
           </div>`,
           glSpeedo({ value: spd, max: 160, gear: nw.shift, acc: glLiveState.acc, label: "Speed" }),
           // The map of where the car stands, the last trip over it.
-          `<div class="gl-navside"><div class="gl-map-slot gl-map-mini" data-map="mini">
+          `<div class="gl-navside">${glMapArea("cockpit", `<div class="gl-map-slot gl-map-mini" data-map="mini">
             ${nw.lat == null ? '<div class="gl-map-wait">Waiting for the car\'s location…</div>' : ""}
             ${L && L.nav ? `<div class="gl-mapo gl-mapo-mini">
               ${L.nav.minutes != null ? `<b>${glClockIn(L.nav.minutes)}<small>${h(glNavName(L.nav.name) || "arrive")}</small></b>` : ""}
@@ -5897,7 +5957,7 @@ function renderGlance(d) {
               <b>${lt.avg_speed_kmh != null ? n(lt.avg_speed_kmh) : "—"}<small>avg km/h</small></b>
               <b class="${ltTone}">${n(lt.wh_per_km, 1, true)}<small>Wh/km</small></b></div>
             </div>` : ""}
-          </div></div>`,
+          </div>`, { nav: (L && L.nav) || null, t: null, lt, kw: null, pct, tw: null, n, navOnly: true })}</div>`,
           foot);
       }
       // Energy over distance, as the car's "Current Drive" shows it.
@@ -5925,7 +5985,7 @@ function renderGlance(d) {
       // and the power sits on the map.
       const navC = L && L.nav;
       {
-        const mini = `<div class="gl-map-slot gl-map-mini" data-map="mini">
+        const mini = glMapArea("cockpit", `<div class="gl-map-slot gl-map-mini" data-map="mini">
             ${nw.lat == null ? '<div class="gl-map-wait">Waiting for the car\'s location…</div>' : ""}
             ${navC ? `<div class="gl-mapo gl-mapo-mini">
               ${navC.minutes != null ? `<b>${glClockIn(navC.minutes)}<small>${h(glNavName(navC.name) || "arrive")}</small></b>` : ""}
@@ -5933,7 +5993,7 @@ function renderGlance(d) {
               ${navC.arrive_pct != null ? `<b class="${navC.arrive_pct < 15 ? "warn" : "good"}">${n(navC.arrive_pct)}<small>% arrive</small></b>` : ""}
             </div>` : ""}
             <div class="gl-mapo gl-mapo-kw ${kw != null && kw < 0 ? "regen" : ""}">${kw == null ? "—" : n(Math.abs(kw), 1)}<small>kW</small></div>
-          </div>`;
+          </div>`, { nav: navC, t, lt, kw, pct, tw: t && (t.wh_per_km ?? t.driving_wh_per_km), n, navOnly: true });
         return page(
           `<div class="gl-trip">
             <div class="gl-trip-h"><b class="rec"></b>Trip computer<em>since ${h(String(tripWhen(t.start_time) || "").split(" ").pop())}</em></div>
@@ -6400,9 +6460,11 @@ function glMapGoogle(host) {
         map.moveCamera({ center: ll(ahead(p, z)), zoom: z, heading, tilt });
       } else { map.setZoom(z); map.setCenter(ll(p)); }
     },
-    follow(p) {
+    // A frame (many a second): an instant move, the frames make the motion.
+    // A redraw (once a second, car slow or stopped): a short pan.
+    follow(p, frame) {
       if (vec) map.moveCamera({ center: ll(ahead(p, map.getZoom() || 16)), heading, tilt });
-      else if (document.body.classList.contains("gl-dim")) map.setCenter(ll(p));   // dimmed: a jump, no animation
+      else if (frame || document.body.classList.contains("gl-dim")) map.setCenter(ll(p));
       else map.panTo(ll(p));
     },
     resize() {},
@@ -6476,12 +6538,12 @@ function glMapLeaflet(host) {
       inner.style.transform = `rotate(${rot.toFixed(1)}deg)`;
     },
     jump(p, z) { layout(); map.setView(p, z, { animate: false }); },
-    follow(p) {
+    // A frame (many a second): an instant move, the frames make the motion.
+    // A redraw (once a second, car slow or stopped): a short glide if bright.
+    follow(p, frame) {
       const dx = map.latLngToContainerPoint(p).distanceTo(map.getSize().divideBy(2));
-      // Bright, a short glide each step; dimmed (a step a second), a jump:
-      // no animation frames at all while the screen is only a glance.
-      const glide = dx < 400 && !document.body.classList.contains("gl-dim");
-      if (dx > 1) map.panTo(p, { animate: glide, duration: 0.2, easeLinearity: 1, noMoveStart: true });
+      const glide = !frame && dx < 400 && !document.body.classList.contains("gl-dim");
+      if (dx > 0.5) map.panTo(p, { animate: glide, duration: 0.2, easeLinearity: 1, noMoveStart: true });
     },
     resize() { layout(); },
   };
@@ -6489,16 +6551,17 @@ function glMapLeaflet(host) {
 // A small note on the map while a destination is set but no route line can
 // be drawn, so the reason shows without opening anything.
 function glMapRouteNote(text) {
-  GL_MAP.note = text;
   const host = GL_MAP.host;
-  if (!host) return;
+  if (!host) { GL_MAP.note = text; return; }
   let el = host.querySelector(".gl-map-note");
+  if (text === GL_MAP.note && !!el === !!text) return;   // unchanged: no DOM write (called every frame)
+  GL_MAP.note = text;
   if (!text) { if (el) el.remove(); return; }
   if (!el) { el = document.createElement("div"); el.className = "gl-map-note"; host.append(el); }
   el.textContent = text;
 }
 function glMapMount(root) {
-  const slot = root && root.querySelector(".gl-map-slot");
+  const slot = root && root.querySelector(".gl-map-slot:not(.gl-numsv)");
   if (!slot) return;
   const kind = glMapReady();
   if (!kind) return;
@@ -6516,7 +6579,7 @@ function glMapMount(root) {
   GL_MAP.eng.resize();
   glMapUpdate(slot.dataset.map || "full");
 }
-function glMapUpdate(mode) {
+function glMapUpdate(mode, frame = false) {
   const eng = GL_MAP.eng, D = glLiveState.data;
   if (!eng || !D) return;
   const nw = D.now || {}, nav = D.nav;
@@ -6526,14 +6589,24 @@ function glMapUpdate(mode) {
     GL_MAP.routeAsk = rv;
     if (!rv) {
       eng.setRoute(null);
-      GL_MAP.routeV = null; GL_MAP.route = null;
+      GL_MAP.routeV = null; GL_MAP.route = null; GL_MAP.routeDest = "";
     } else {
       fetch("/api/live/route?" + new URLSearchParams(D.vin ? { vin: D.vin } : {}), { credentials: "same-origin" })
         .then((r) => (r.ok ? r.json() : null)).then((r) => {
           // An error answer: ask again in 5 s (else not until the route changed).
           if (!r) { GL_MAP.routeAsk = null; GL_MAP.routeRetryAt = Date.now() + 5000; return; }
           if (r.v !== GL_MAP.routeAsk || !GL_MAP.eng) return;
+          const had = GL_MAP.route && GL_MAP.route.points && GL_MAP.route.points.length;
+          const dest = nav && nav.dest_lat != null ? nav.dest_lat.toFixed(4) + "," + nav.dest_lon.toFixed(4) : "";
+          if (!(r.points && r.points.length) && had && dest && dest === GL_MAP.routeDest
+            && !/km from the car/.test(r.format || "")) {
+            // An update the app cannot read, mid-route: keep the last good
+            // route (still trimmed behind the car) rather than a blank map.
+            GL_MAP.routeV = r.v;
+            return;
+          }
           GL_MAP.routeV = r.v; GL_MAP.route = r; GL_MAP.cut = null; GL_MAP.trimAt = 0;
+          GL_MAP.routeDest = dest;
           GL_MAP.eng.setRoute(r.points || []);
           // A very short RouteLine (a point or two, as near the destination)
           // is nothing to draw, not a fault: no note for it.
@@ -6544,7 +6617,11 @@ function glMapUpdate(mode) {
         }).catch(() => { GL_MAP.routeAsk = null; GL_MAP.routeRetryAt = Date.now() + 5000; });
     }
   }
-  eng.setDest(nav && nav.dest_lat != null ? [nav.dest_lat, nav.dest_lon] : null);
+  const destKey = nav && nav.dest_lat != null ? nav.dest_lat + "," + nav.dest_lon : "";
+  if (destKey !== GL_MAP.destKey || eng !== GL_MAP.destEng) {
+    GL_MAP.destKey = destKey; GL_MAP.destEng = eng;
+    eng.setDest(destKey ? [nav.dest_lat, nav.dest_lon] : null);
+  }
   if (eng.setDim) eng.setDim(document.body.classList.contains("gl-dim"));
   // Navigating with no route line to draw: say why, on the map.
   if (!nav) glMapRouteNote("");
@@ -6605,20 +6682,28 @@ function glMapUpdate(mode) {
   if (key !== GL_MAP.zoomKey) {
     GL_MAP.zoomKey = key;
     eng.jump(pos, z, mode);
-  } else eng.follow(pos);
+  } else eng.follow(pos, frame);
 }
-// Five steps a second between redraws while a map is on screen, the car is
-// moving and the screen is bright: only the arrow and the view move.
-setInterval(() => {
+// Between the car's readings the map moves on by itself, frame by frame,
+// while a map is on screen and the car is moving: each frame places the car
+// where its speed and heading put it at that moment (eased, see
+// glMapUpdate), so the view slides instead of stepping. Frames are capped:
+// GL_MAP_FPS while the screen is bright, GL_MAP_FPS_DIM while dimmed (most
+// of a drive), since each frame repaints the map. Nothing else is redrawn.
+const GL_MAP_FPS = 30, GL_MAP_FPS_DIM = 8;
+let glMapFrameAt = 0;
+function glMapFrame(ts) {
+  requestAnimationFrame(glMapFrame);
   const D = glLiveState.data, nw = D && D.now;
   if (!GL_MAP.eng || !GL_MAP.host || !GL_MAP.host.isConnected || document.hidden
     || !nw || !(+nw.speed_kmh > 3)) return;
-  // Dimmed, the map moves once a second (with the redraw), not five times:
-  // each move repaints the whole map, the page's biggest battery cost.
-  if (document.body.classList.contains("gl-dim")) return;
+  const fps = document.body.classList.contains("gl-dim") ? GL_MAP_FPS_DIM : GL_MAP_FPS;
+  if (ts - glMapFrameAt < 1000 / fps - 4) return;
+  glMapFrameAt = ts;
   const slot = GL_MAP.host.parentElement;
-  glMapUpdate((slot && slot.dataset.map) || "full");
-}, 200);
+  glMapUpdate((slot && slot.dataset.map) || "full", true);
+}
+requestAnimationFrame(glMapFrame);
 
 // Shrink to fit: any figure or heading wider than the box it sits in gets a
 // smaller font until it fits (down to 8 px), so no phone size clips a number or
@@ -6681,7 +6766,25 @@ function glFitRow(row) {
   }
 }
 
+// Sizes that depend on a box's own height, set once per draw: the Cockpit's
+// trip tiles (data-fit on the pager: short, small, tiny) and Mix's speed.
+function glFitSized(root) {
+  const vp = root.querySelector(".gl-vpages"), t = vp && vp.querySelector(".gl-vpage > .gl-rt");
+  if (t && t.clientHeight) {
+    const cs = getComputedStyle(t);
+    const inner = t.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const fit = inner <= 32 ? "tiny" : inner <= 38 ? "small" : inner <= 44 ? "short" : "";
+    if ((vp.dataset.fit || "") !== fit) { if (fit) vp.dataset.fit = fit; else delete vp.dataset.fit; }
+  }
+  const ms = root.querySelector(".gl-mix-speed"), mn = ms && ms.querySelector(".gl-spdn");
+  if (mn && ms.clientHeight) {
+    mn.style.fontSize = "";
+    const cap = Math.max(10, (ms.clientHeight - 20) * 1.3);
+    if (parseFloat(getComputedStyle(mn).fontSize) > cap) mn.style.fontSize = cap.toFixed(1) + "px";
+  }
+}
 function glFit(root) {
+  glFitSized(root);
   const els = [...root.querySelectorAll(GL_FIT)];
   for (const e of els) if (e.style.fontSize) e.style.fontSize = "";
   const fix = [];
@@ -8077,15 +8180,17 @@ document.addEventListener("wheel", (e) => {
     const edge = 28;
     sw = g && glanceTab === "live" && !e.target.closest("button, a, input, select, [data-vscroll]")
       && e.clientX > edge && e.clientX < innerWidth - edge && e.clientY > edge && e.clientY < innerHeight - edge
-      ? { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId } : null;
+      ? { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId,
+          flip: (e.target.closest("[data-mapflip]") || { dataset: {} }).dataset.mapflip || null } : null;
   }, { passive: true });
   document.addEventListener("pointerup", (e) => {
     if (!sw || e.pointerId !== sw.id) return;
-    const dx = e.clientX - sw.x, dy = e.clientY - sw.y, dt = Date.now() - sw.t;
+    const dx = e.clientX - sw.x, dy = e.clientY - sw.y, dt = Date.now() - sw.t, flip = sw.flip;
     sw = null;
     if (dt >= 900) return;
     if (Math.abs(dx) >= 60 && Math.abs(dx) > Math.abs(dy) * 1.6) glSkinStep("h", dx < 0 ? 1 : -1);
-    else if (Math.abs(dy) >= 50 && Math.abs(dy) > Math.abs(dx) * 1.6) glSkinStep("v", dy < 0 ? 1 : -1);
+    // Up or down on a map (or its figures) flips between the two.
+    else if (Math.abs(dy) >= 50 && Math.abs(dy) > Math.abs(dx) * 1.6) { if (flip) glMapFlip(flip); else glSkinStep("v", dy < 0 ? 1 : -1); }
   }, { passive: true });
   document.addEventListener("pointercancel", () => { sw = null; }, { passive: true });
 }

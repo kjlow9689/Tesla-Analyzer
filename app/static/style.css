@@ -3458,30 +3458,26 @@ main > .card { max-width: 100%; }
 
 /* The Cockpit's paged trip tiles take their height from the panel, which
    varies with the phone (and Safari's bars, and the Dynamic Island's
-   margins). Each tile sizes to itself (heights are its inner space, inside
-   the padding): short, the icon goes so the figure stays whole; shorter
-   still, the figure shrinks. Never clipped; on a usual phone, unchanged. */
-.gl-vpage > .gl-rt { container-type: size; overflow: hidden; }
-@container (max-height: 44px) {
-  .gl-vpage > .gl-rt > i { display: none; }
-  .gl-vpage > .gl-rt > span { grid-column: 1 / -1; }
-}
-@container (max-height: 38px) {
-  .gl-vpage > .gl-rt > strong { font-size: 22px; }
-}
-@container (max-height: 32px) {
-  .gl-vpage > .gl-rt > strong { font-size: 18px; }
-  .gl-vpage > .gl-rt > span { font-size: 8px; }
-}
+   margins). After each draw the page measures a tile's inner height and
+   marks the pager (glFitSized): short, the icon goes so the figure stays
+   whole; shorter still, the figure shrinks. Measured once per draw, not by
+   container queries, which made every layout of the page about 13 times
+   dearer and the moving map repaint the whole page each frame. */
+.gl-vpage > .gl-rt { overflow: hidden; }
+.gl-vpages[data-fit] .gl-vpage > .gl-rt > i { display: none; }
+.gl-vpages[data-fit] .gl-vpage > .gl-rt > span { grid-column: 1 / -1; }
+.gl-vpages[data-fit="small"] .gl-vpage > .gl-rt > strong { font-size: 22px; }
+.gl-vpages[data-fit="tiny"] .gl-vpage > .gl-rt > strong { font-size: 18px; }
+.gl-vpages[data-fit="tiny"] .gl-vpage > .gl-rt > span { font-size: 8px; }
 
 /* Mix and Stack: the speed fits its box, so it never spills over the
    readings around it, whatever the screen's height (Safari's bars). Mix's
-   box is set by the layout and the figure sizes to it (digits are about
-   0.75 of the font size); Stack's box grows with its figure, a little
+   box is set by the layout and the figure is capped to it after each draw
+   (glFitSized; digits are about 0.75 of the font size); Stack's box grows with its figure, a little
    smaller than before so it fits with its label. */
-.gl-mix-speed { container-type: size; overflow: hidden; }
+.gl-mix-speed { overflow: hidden; }
 .gl-spdn { font: inherit; line-height: .85; }
-.gl-mix-speed > .gl-spdn { font-size: min(calc(26 * var(--gh)), calc(15 * var(--gw)), calc((100cqh - 20px) * 1.3)); }
+.gl-mix-speed > .gl-spdn { font-size: min(calc(26 * var(--gh)), calc(15 * var(--gw))); }   /* capped to its box by glFitSized */
 
 /* The arrival strip across the top of a map (Cockpit and others): the
    destination's name gives way first, ending in "…", so it never runs into
@@ -3503,3 +3499,40 @@ main > .card { max-width: 100%; }
 .gl-gr-h strong { text-shadow: 0 0 8px color-mix(in srgb, currentColor 50%, transparent); }
 .gl-ln-num { text-shadow: 0 0 14px color-mix(in srgb, var(--c) 50%, transparent); }
 .gl-rt strong { color: #d9e8f1; text-shadow: 0 0 6px color-mix(in srgb, var(--rc) 40%, transparent); }
+
+/* Map or numbers (glMapArea): the flip button on the map's right edge, and
+   the figures-only view in the map's own box. Sized to the box's width. */
+.gl-flip { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); z-index: 6;
+  font: 700 10px/1 system-ui, sans-serif; letter-spacing: .06em; color: #cfe9f5;
+  background: rgba(5, 10, 16, .78); border: 1px solid #2a3a4c; border-radius: 9px; padding: 6px 7px; cursor: pointer; }
+.gl-flip:active { background: rgba(34, 211, 238, .25); }
+.gl-dim .gl-flip { opacity: .45; }
+.gl-numsv { display: flex; flex-direction: column; justify-content: center; gap: clamp(4px, 2.5cqw, 14px);
+  padding: 8px 40px 8px 10px; background: radial-gradient(120% 90% at 50% 0%, #0d1824, #05080c 70%); }
+.gl-numsv b { display: flex; flex-direction: column; align-items: flex-start; min-width: 0;
+  font: 700 clamp(16px, 8cqw, 38px)/1.05 "Chakra Petch", system-ui, sans-serif; color: #dbe8f1; font-variant-numeric: tabular-nums; }
+.gl-numsv b small { font: 600 clamp(8px, 2.6cqw, 12px)/1.2 system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-top: 2px; white-space: nowrap; }
+.gl-numsv b.good { color: var(--green); } .gl-numsv b.warn { color: var(--amber); }
+.gl-nv-nav em { display: block; font: 600 clamp(11px, 3.6cqw, 16px) system-ui, sans-serif; font-style: normal; color: #22d3ee;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+.gl-nv-row { display: flex; flex-wrap: wrap; gap: 4px clamp(10px, 5cqw, 28px); }
+.gl-nv-delay { display: block; margin-top: 3px; font: 600 11px system-ui, sans-serif; color: var(--amber); }
+.gl-nv-trip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(4px, 2cqw, 12px) 10px;
+  border-top: 1px solid #1d2a38; padding-top: clamp(4px, 2cqw, 12px); }
+.gl-nv-trip b { font-size: clamp(14px, 6.5cqw, 30px); }
+.gl-mapd .gl-nv-trip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.gl-mapd .gl-nv-trip b { font-size: clamp(16px, 4.2cqw, 34px); }
+.gl-mapd .gl-numsv b { font-size: clamp(18px, 5cqw, 44px); }
+.gl-nv-spd { display: flex; align-items: baseline; gap: 6px; font: 800 clamp(30px, 9cqw, 64px)/1 system-ui, sans-serif; }
+.gl-nv-spd small { font: 600 11px system-ui, sans-serif; color: var(--muted); }
+.gl-nv-spd .gl-mapo-gear { margin-left: 10px; }
+/* The Map design's box is wide and short: speed and the destination on the
+   left, the trip on the right. */
+.gl-mapd .gl-numsv { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  grid-template-areas: "spd trip" "nav trip"; align-content: center; column-gap: clamp(12px, 4cqw, 36px); row-gap: 6px; }
+.gl-mapd .gl-nv-spd { grid-area: spd; font-size: clamp(30px, 7cqw, 60px); }
+.gl-mapd .gl-nv-nav { grid-area: nav; }
+.gl-mapd .gl-nv-trip { grid-area: trip; align-self: center; border-top: 0; padding-top: 0;
+  border-left: 1px solid #1d2a38; padding-left: clamp(8px, 3cqw, 24px); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.gl-mapd .gl-numsv b { font-size: clamp(16px, 3.6cqw, 34px); }
+.gl-mapd .gl-nv-trip b { font-size: clamp(16px, 3.4cqw, 30px); }
