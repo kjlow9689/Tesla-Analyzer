@@ -4325,32 +4325,12 @@ document.getElementById("quick-nav")?.addEventListener("click", (e) => {
 // cards use, so it costs no chart instances and redraws instantly on rotate.
 // A cluster dial: a 240° sweep with ticks, coloured bands, a needle and an
 // optional marker (e.g. the rated line). Drawn on a 200x200 box.
-// The robotic frame: an armour plate at each corner (one drawing, mirrored),
-// riveted, with a lit seam and a status light; LED strips along the top and
-// bottom, vent slots up the sides. Decoration only, behind the content.
-const GL_CORNER = `<svg viewBox="0 0 150 96" aria-hidden="true">
-  <defs>
-    <linearGradient id="glPlate" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#3b4554"/><stop offset=".35" stop-color="#1c232d"/>
-      <stop offset=".7" stop-color="#121820"/><stop offset="1" stop-color="#262e39"/></linearGradient>
-    <linearGradient id="glEdge" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#8a96a8"/><stop offset="1" stop-color="#2a313c"/></linearGradient>
-  </defs>
-  <path d="M0 0H150L132 10H40L22 28V78L10 96H0Z" fill="url(#glPlate)" stroke="url(#glEdge)" stroke-width="1.2"/>
-  <path d="M6 6H118L108 12H38L18 32V74L10 86H6Z" fill="none" stroke="#05070a" stroke-width="1" opacity=".8"/>
-  <path class="seam" d="M30 16H124M16 36V70" fill="none" stroke-width="2" stroke-linecap="round"/>
-  <g fill="#0a0d12" stroke="#5a6574" stroke-width=".8">
-    <circle cx="12" cy="12" r="3"/><circle cx="60" cy="5" r="2.2"/><circle cx="5" cy="58" r="2.2"/></g>
-  <g stroke="#07090c" stroke-width="1.6">
-    <path d="M84 3l-4 5M90 3l-4 5M96 3l-4 5M102 3l-4 5"/></g>
-  <circle class="led" cx="12" cy="12" r="1.6"/>
-  <rect class="led2" x="27" y="21" width="9" height="3" rx="1"/>
-</svg>`;
+// The frame round the Live page: slim arcs at the rounded corners (drawn by
+// .gl-main::after) and a chasing strip top and bottom. The heavy corner
+// plates and side vents it once had took width from the page and, sideways
+// on a phone, sat in the screen's rounded corners, cut off.
 const GL_FRAME = `<div class="gl-frame" aria-hidden="true">
-  <i class="c tl">${GL_CORNER}</i><i class="c tr">${GL_CORNER}</i>
-  <i class="c bl">${GL_CORNER}</i><i class="c br">${GL_CORNER}</i>
   <i class="strip top"></i><i class="strip bot"></i>
-  <i class="vent l"></i><i class="vent r"></i>
 </div>`;
 
 // The Live page's speedometer, not a dial: a wide angular panel with the speed
@@ -4909,6 +4889,25 @@ window.addEventListener("resize", () => {
 });
 window.addEventListener("resize", () => setTimeout(glWakeSync, 400));
 
+// Sideways, iOS keeps the camera's safe margin on both sides, though the
+// camera (the Dynamic Island or notch) is on one only. Which one follows
+// from the way the phone is turned: the page marks it, and style.css keeps
+// the full margin on that side and a small one on the other, which gives
+// the Live page's map and figures that width back.
+function glNotchSide() {
+  let a = typeof window.orientation === "number" ? window.orientation : null;
+  if (a == null && screen.orientation && typeof screen.orientation.angle === "number") {
+    a = screen.orientation.angle === 270 ? -90 : screen.orientation.angle;
+  }
+  const side = a === 90 ? "l" : a === -90 ? "r" : "";
+  const root = document.documentElement;
+  if ((root.dataset.notch || "") !== side) { if (side) root.dataset.notch = side; else delete root.dataset.notch; }
+}
+glNotchSide();
+window.addEventListener("orientationchange", glNotchSide);
+window.addEventListener("resize", glNotchSide);
+if (screen.orientation && screen.orientation.addEventListener) screen.orientation.addEventListener("change", glNotchSide);
+
 // One reading from the server, pushed or polled: fold it into the page.
 function glLiveApply(L) {
   const nw = L.now || {};
@@ -5158,9 +5157,9 @@ function glKeyBar(c) {
   const { t, nw } = c;
   const now = new Date();
   const hh = String(now.getHours()).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0");
-  // The mix designs carry the odometer as a row of drums (Round Mix and the
-  // Cockpit already show it in their own way).
-  const odoChip = [7, 9, 2, 11, 12].includes(c.skin) && c.odo != null
+  // The mix designs carry the odometer as a row of drums (Round Mix, Digital Mix
+  // and the Cockpit already show it in their own way).
+  const odoChip = [7, 9, 2, 11].includes(c.skin) && c.odo != null
     ? `<span class="gl-kb gl-kodo"><em>Odo km</em><span class="gl-drum">${String(Math.round(c.odo)).split("").map((d) => `<b>${d}</b>`).join("")}</span></span>` : "";
   const chips = [
     odoChip,
@@ -5819,21 +5818,37 @@ function glNumsView(o, mini) {
   if (!mini) {
     const { usedPct, costRate, cur, rangeHere, range, odo } = o;
     const kwTxt = kw == null ? "—" : n(Math.abs(kw), 1);
-    const full = [
-      fig(v(dist, 1, true), "km"), fig(v(mins), "min"), fig(v(avg), "avg km/h"),
-      fig(v(t && t.max_speed_kmh), "top km/h"),
-      fig(v(whk, 1, true), "Wh/km"),
+    // Driving: this drive, its own figures only. Parked: the last trip, in
+    // full, so no half of the box is from one trip and half blank.
+    const full = t ? [
+      `<em class="gl-nv-th">This drive</em>`,
+      fig(v(t.distance_km, 1, true), "km"), fig(v(t.duration_min), "min"), fig(v(t.avg_speed_kmh), "avg km/h"),
+      fig(v(t.max_speed_kmh), "top km/h"),
+      fig(v(tw ?? t.wh_per_km ?? t.driving_wh_per_km, 1, true), "Wh/km"),
       fig(kwTxt, kw != null && kw < 0 ? "regen kW" : "kW", kw != null && kw < 0 ? "good" : ""),
-      fig(v(t && t.regen_kwh, 2), "regen kWh", "good"),
-      fig(v(t && t.energy_kwh, 2), "net kWh"),
+      fig(v(t.regen_kwh, 2), "regen kWh", "good"),
+      fig(v(t.energy_kwh, 2), "net kWh"),
       fig(v(usedPct, 2, true), "% batt used"),
       fig(v(pct, 1, true), "% batt", pct != null && pct < 20 ? "warn" : ""),
       fig(v(range), "range km"),
-      fig(costRate != null && t && t.energy_kwh != null ? n(t.energy_kwh * costRate, 2, true) : "—", `cost ${cur || "RM"}`),
-    ].join("");
+      fig(costRate != null && t.energy_kwh != null ? n(t.energy_kwh * costRate, 2, true) : "—", `cost ${cur || "RM"}`),
+    ].join("") : lt ? [
+      `<em class="gl-nv-th">Last trip<span>${h(lt.route || tripWhen(lt.start_time))}</span></em>`,
+      fig(v(lt.distance_km, 1, true), "km"), fig(v(lt.duration_min), "min"), fig(v(lt.avg_speed_kmh), "avg km/h"),
+      fig(v(lt.max_speed_kmh), "top km/h"),
+      fig(v(lt.wh_per_km, 1, true), "Wh/km", lt.efficiency_band === "efficient" ? "good" : lt.efficiency_band === "inefficient" ? "warn" : ""),
+      fig(v(lt.energy_kwh, 2), "kWh"),
+      fig(v(lt.soc_used_pct, 1, true), "% batt used"),
+      fig(lt.cost != null ? n(lt.cost, 2, true) : "—", `cost ${cur || "RM"}`),
+      fig(v(lt.eco_score), "eco score"),
+      fig(v(pct, 1, true), "% batt now", pct != null && pct < 20 ? "warn" : ""),
+      fig(v(range), "range km now"),
+      fig(v(lt.out_temp), "°C then"),
+    ].join("") : `<em class="gl-nv-th">No trip yet</em>${fig(v(pct, 1, true), "% batt now")}${fig(v(range), "range km now")}`;
     // Not navigating, the space under the speed holds what is left.
     const side = nav ? navBlock : `<div class="gl-nv-nav gl-nv-left"><em>On this charge</em><div class="gl-nv-row">
-        ${fig(v(rangeHere), "km at this rate")}${fig(odo != null ? n(odo, 0) : "—", "odo km")}${nw && nw.out_temp != null ? fig(n(nw.out_temp, 0), "°C outside") : ""}</div></div>`;
+        ${rangeHere != null || t ? fig(v(rangeHere), "km at this rate")
+          : fig(nw && nw.energy_kwh != null && lt && lt.wh_per_km > 0 ? n(nw.energy_kwh * 1000 / lt.wh_per_km) : "—", "km at last trip's rate")}${fig(odo != null ? n(odo, 0) : "—", "odo km")}${nw && nw.out_temp != null ? fig(n(nw.out_temp, 0), "°C outside") : ""}</div></div>`;
     const speedF = nw ? `<div class="gl-nv-spd" style="color:${spd != null && spd > 0.5 ? glSkinColour(spd) : "#e8fbff"}">${spd != null ? Math.round(spd) : "—"}<small>km/h</small>
     <span class="gl-mapo-gear">${["P", "R", "N", "D"].map((g) => `<b class="${nw.shift === g ? "on" : ""}">${g}</b>`).join("")}</span></div>` : "";
     return `${speedF}${side}<div class="gl-nv-trip gl-nv-full">${full}</div>`;
@@ -5860,7 +5875,8 @@ function glNumsView(o, mini) {
       rows = [
         f(v(t.distance_km, 1, true), "km"), f(v(t.duration_min), "min"),
         f(v(t.avg_speed_kmh), "avg km/h"), f(v(t.max_speed_kmh), "top km/h"),
-        f(v(whk, 1, true), "Wh/km"), f(v(t.energy_kwh, 2), "net kWh"),
+        // Its own Wh/km only, under a "This drive" heading (no last trip's).
+        f(v(tw ?? t.wh_per_km ?? t.driving_wh_per_km, 1, true), "Wh/km"), f(v(t.energy_kwh, 2), "net kWh"),
         f(v(t.regen_kwh, 2), "regen kWh", "good", "o1"), f(v(used, 2, true), "% batt used", "", "o1"),
         f(rate != null && t.energy_kwh != null ? n(t.energy_kwh * rate, 2, true) : "—", `cost ${cur}`, "", "o2"),
         f(v(now.out_temp), "°C outside", "", "o2"),
@@ -6890,7 +6906,11 @@ function glFitSized(root) {
   // A side box's figures: the least needed give way until the rest fit.
   const box = root.querySelector(".gl-map-mini.gl-numsv");
   if (box) {
-    for (const step of ["cut2", "cut1", "cut0"]) {
+    // From the full set each time: after a resize to a taller screen, figures
+    // dropped for the shorter one come back.
+    const steps = ["cut2", "cut1", "cut0", "cuth", "cutf"];
+    box.classList.remove(...steps);
+    for (const step of steps) {
       if (box.scrollHeight <= box.clientHeight + 1) break;
       box.classList.add(step);
     }
@@ -6899,7 +6919,7 @@ function glFitSized(root) {
   if (t && t.clientHeight) {
     const cs = getComputedStyle(t);
     const inner = t.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-    const fit = inner <= 32 ? "tiny" : inner <= 38 ? "small" : inner <= 44 ? "short" : "";
+    const fit = inner <= 32 ? "tiny" : inner <= 38 ? "small" : inner <= 48 ? "short" : "";
     if ((vp.dataset.fit || "") !== fit) { if (fit) vp.dataset.fit = fit; else delete vp.dataset.fit; }
   }
   const ms = root.querySelector(".gl-mix-speed"), mn = ms && ms.querySelector(".gl-spdn");

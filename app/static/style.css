@@ -1657,6 +1657,20 @@ footer { padding: 18px 28px; color: var(--muted); font-size: 12px; border-top: 1
            max(8px, env(safe-area-inset-bottom)) var(--sl);
   flex-direction: column; gap: 8px;
 }
+/* Sideways the camera is on one side only (glNotchSide): the other side
+   keeps 20px, clear of the screen's rounded corners, not the full margin. */
+/* On the camera's side, only as much as the camera takes: the Dynamic
+   Island ends about 48px from the edge sideways, a notch sooner (an iPhone
+   with a notch reports 44 to 48px anyway). */
+/* The other side is balanced to match: about 10px less, the page's own
+   padding being 4px on the camera's side and 10px on the other, so both
+   gaps come out nearly equal (54 and 50px on a Dynamic Island iPhone). */
+:root[data-notch="l"] .glance { --sl: max(14px, min(50px, env(safe-area-inset-left))); --sr: max(14px, min(40px, calc(env(safe-area-inset-left) - 10px))); }
+:root[data-notch="r"] .glance { --sr: max(14px, min(50px, env(safe-area-inset-right))); --sl: max(14px, min(40px, calc(env(safe-area-inset-right) - 10px))); }
+@media (orientation: landscape) and (max-height: 560px) {
+  :root[data-notch="l"] .glance > .gl-main { padding-left: max(4px, calc(26px - var(--xl))) !important; }
+  :root[data-notch="r"] .glance > .gl-main { padding-right: max(4px, calc(26px - var(--xr))) !important; }
+}
 body.glance-on .glance { display: flex; justify-content: center; align-items: center; }
 @media (orientation: landscape) and (max-height: 560px) {
   body:not(.view-home) .glance { display: flex; }
@@ -1960,10 +1974,10 @@ body.glance-on .glance > .gl-main { flex: 0 1 min(540px, 100%); width: 100%; max
 /* HUD frame: a thin chamfered border round the whole view, corner brackets
    in the page colour, a faint grid and a slow scan line. */
 .gl-main { --tc: var(--accent-2); padding: 14px 18px 10px; isolation: isolate; }
+.gl-main { --fr: 18px; }
 .gl-main::before {
   content: ""; position: absolute; inset: 0; z-index: -2; pointer-events: none;
-  clip-path: polygon(22px 0, calc(100% - 22px) 0, 100% 22px, 100% calc(100% - 22px),
-                     calc(100% - 22px) 100%, 22px 100%, 0 calc(100% - 22px), 0 22px);
+  border-radius: var(--fr);
   background:
     linear-gradient(rgba(120,160,220,.045) 1px, transparent 1px) 0 0 / 100% 22px,
     linear-gradient(90deg, rgba(120,160,220,.045) 1px, transparent 1px) 0 0 / 22px 100%,
@@ -1971,21 +1985,22 @@ body.glance-on .glance > .gl-main { flex: 0 1 min(540px, 100%); width: 100%; max
   border: 1px solid color-mix(in srgb, var(--tc) 35%, #2b3442);
   box-shadow: inset 0 0 40px rgba(0,0,0,.6);
 }
+/* Slim corner arcs, and a short glow at the middle of the top and bottom:
+   the outline in the accent colour, shown only there. */
 .gl-main::after {
   content: ""; position: absolute; inset: -1px; z-index: -1; pointer-events: none;
-  --l: 34px; --w: 2px;
-  background:
-    linear-gradient(var(--tc), var(--tc)) 0 0 / var(--l) var(--w),
-    linear-gradient(var(--tc), var(--tc)) 0 0 / var(--w) var(--l),
-    linear-gradient(var(--tc), var(--tc)) 100% 0 / var(--l) var(--w),
-    linear-gradient(var(--tc), var(--tc)) 100% 0 / var(--w) var(--l),
-    linear-gradient(var(--tc), var(--tc)) 0 100% / var(--l) var(--w),
-    linear-gradient(var(--tc), var(--tc)) 0 100% / var(--w) var(--l),
-    linear-gradient(var(--tc), var(--tc)) 100% 100% / var(--l) var(--w),
-    linear-gradient(var(--tc), var(--tc)) 100% 100% / var(--w) var(--l),
-    linear-gradient(90deg, transparent, color-mix(in srgb, var(--tc) 80%, transparent), transparent) 50% 0 / 40% 1px,
-    linear-gradient(90deg, transparent, color-mix(in srgb, var(--tc) 80%, transparent), transparent) 50% 100% / 40% 1px;
-  background-repeat: no-repeat;
+  --l: 48px;
+  border: 2px solid var(--tc); border-radius: calc(var(--fr) + 1px);
+  -webkit-mask:
+    linear-gradient(#000 0 0) 0 0 / var(--l) var(--l), linear-gradient(#000 0 0) 100% 0 / var(--l) var(--l),
+    linear-gradient(#000 0 0) 0 100% / var(--l) var(--l), linear-gradient(#000 0 0) 100% 100% / var(--l) var(--l),
+    linear-gradient(90deg, transparent, #000, transparent) 50% 0 / 40% 3px, linear-gradient(90deg, transparent, #000, transparent) 50% 100% / 40% 3px;
+  -webkit-mask-repeat: no-repeat;
+  mask:
+    linear-gradient(#000 0 0) 0 0 / var(--l) var(--l), linear-gradient(#000 0 0) 100% 0 / var(--l) var(--l),
+    linear-gradient(#000 0 0) 0 100% / var(--l) var(--l), linear-gradient(#000 0 0) 100% 100% / var(--l) var(--l),
+    linear-gradient(90deg, transparent, #000, transparent) 50% 0 / 40% 3px, linear-gradient(90deg, transparent, #000, transparent) 50% 100% / 40% 3px;
+  mask-repeat: no-repeat;
   filter: drop-shadow(0 0 4px var(--tc));
 }
 .gl-body::after {
@@ -2069,19 +2084,12 @@ body.glance-on .glance > .gl-main { flex: 0 1 min(540px, 100%); width: 100%; max
   .glance > .gl-main::after { left: calc(-1px - var(--xl)); right: calc(-1px - var(--xr)); }
   .glance > .gl-main > .gl-frame { left: calc(-2px - var(--xl)); right: calc(-2px - var(--xr)); }
   .glance > .gl-main { padding-left: max(10px, calc(26px - var(--xl))) !important; padding-right: max(10px, calc(26px - var(--xr))) !important; }
+  /* Corners rounded to follow the screen's own (about 47 to 62px on an
+     iPhone, less on most Android phones), so the arcs are never cut off. */
+  .glance > .gl-main { --fr: 46px; }
 }
 .gl-main > :not(.gl-frame) { position: relative; z-index: 1; }
-.gl-frame .c { position: absolute; width: 150px; height: 96px; display: block;
-  filter: drop-shadow(0 4px 6px rgba(0,0,0,.7)); }
-.gl-frame .c svg { width: 100%; height: 100%; display: block; }
-.gl-frame .tl { left: 0; top: 0; }
-.gl-frame .tr { right: 0; top: 0; transform: scaleX(-1); }
-.gl-frame .bl { left: 0; bottom: 0; transform: scaleY(-1); }
-.gl-frame .br { right: 0; bottom: 0; transform: scale(-1, -1); }
-.gl-frame .seam { stroke: var(--tc); filter: drop-shadow(0 0 3px var(--tc)); opacity: .9; }
-.gl-frame .led { fill: var(--tc); filter: drop-shadow(0 0 3px var(--tc)); animation: gl-blink 2.4s ease-in-out infinite var(--p2400, 0ms); }
-.gl-frame .led2 { fill: #ff5a5f; filter: drop-shadow(0 0 3px #ff5a5f); animation: gl-blink 3.1s ease-in-out infinite calc(var(--p3100, 0ms) + .6s); }
-.gl-frame .strip { position: absolute; left: 160px; right: 160px; height: 3px; border-radius: 2px;
+.gl-frame .strip { position: absolute; left: 22%; right: 22%; height: 3px; border-radius: 2px;
   background:
     linear-gradient(90deg, transparent 0 40%, rgba(255,255,255,.9) 50%, transparent 60% 100%) 0 0 / 30% 100% no-repeat,
     repeating-linear-gradient(90deg, color-mix(in srgb, var(--tc) 85%, transparent) 0 10px, transparent 10px 15px);
@@ -2090,20 +2098,11 @@ body.glance-on .glance > .gl-main { flex: 0 1 min(540px, 100%); width: 100%; max
 .gl-frame .strip.top { top: 3px; }
 .gl-frame .strip.bot { bottom: 3px; animation-direction: reverse; }
 @keyframes gl-chase { from { background-position: -40% 0, 0 0; } to { background-position: 140% 0, 0 0; } }
-.gl-frame .vent { position: absolute; top: 120px; bottom: 120px; width: 6px;
-  background: repeating-linear-gradient(180deg, #2b3340 0 3px, #06080b 3px 8px);
-  border-radius: 2px; box-shadow: inset 0 0 2px #000, 0 0 6px -2px var(--tc); opacity: .8; }
-.gl-frame .vent.l { left: 4px; } .gl-frame .vent.r { right: 4px; }
 @media (prefers-reduced-motion: reduce) {
   .gl-frame .strip, .gl-frame .led, .gl-frame .led2 { animation: none; } }
 /* Content clears the plates. */
 .gl-main { padding: 22px 30px 22px; }
 .gl-foot { padding-left: 14px; }
-@media (max-height: 420px) {
-  .gl-frame .c { width: 112px; height: 72px; }
-  .gl-frame .strip { left: 120px; right: 120px; }
-  .gl-frame .vent { top: 90px; bottom: 90px; }
-}
 
 /* Horizontal bars from the rated line (glHBars). */
 .gl-hbars { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 16px; padding: 4px 2px; }
@@ -2307,9 +2306,6 @@ header::after {
   .gl-head h2 { font-size: 14px; }
   .gl-head .gl-sub { font-size: 11px; }
   .gl-page, .gl-side { gap: 7px; }
-  .gl-frame .c { width: 96px; height: 60px; }
-  .gl-frame .strip { left: 104px; right: 104px; }
-  .gl-frame .vent { top: 76px; bottom: 76px; }
 }
 @media (orientation: landscape) and (max-height: 330px) {
   .gl-main { padding: 12px 22px 10px; }
@@ -2510,6 +2506,15 @@ main > .card { max-width: 100%; }
 .gl-side > .gl-trip { flex: 1 1 auto; max-height: 75%; margin-block: auto; }
 /* Room for the odometer line under the tiles while driving. */
 .gl-side > .gl-trip:has(.gl-odo) { max-height: 78%; }
+/* Clear of the tiles above (their glow runs a few px below them). */
+.gl-side > .gl-trip .gl-odo { margin-top: 12px; }
+/* The map and battery column lines up with the trip panel opposite: the same
+   height, centred, rather than from just under the header to the footer. */
+.gl-side > .gl-navside { flex: 1 1 auto; max-height: 78%; margin-block: auto; }
+/* The Cockpit's two side columns stand taller, level with each other: a
+   taller map and a little more room in the trip tiles, still clear of the
+   header and the footer. */
+.gl-3:has(.gl-navside) > .gl-side > .gl-trip, .gl-3:has(.gl-navside) > .gl-side > .gl-navside { max-height: 88%; }
 .gl-side > .gl-trip .gl-rts { flex: 1 1 auto; grid-auto-rows: 1fr; }
 .gl-side > .gl-trip .gl-rt strong { font-size: clamp(23px, calc(7.6 * var(--gh)), 35px); line-height: 1; }
 @media (orientation: landscape) and (max-width: 740px) {
@@ -2587,7 +2592,7 @@ main > .card { max-width: 100%; }
   .gl-side > .gl-trip:has(.gl-odo) .gl-rts { gap: 6px; padding-top: 6px; }
   .gl-side > .gl-trip:has(.gl-odo) .gl-rt { padding-top: 5px; padding-bottom: 5px; }
   .gl-side > .gl-trip:has(.gl-odo) .gl-rt strong { font-size: clamp(20px, calc(6.8 * var(--gh)), 27px); }
-  .gl-side > .gl-trip:has(.gl-odo) .gl-odo { margin-top: 6px; padding-top: 3px; padding-bottom: 3px; }
+  .gl-side > .gl-trip:has(.gl-odo) .gl-odo { margin-top: 10px; padding-top: 3px; padding-bottom: 3px; }
 }
 /* Live page on screen (body.gl-eco): true black behind everything. On the
    OLED screen of a recent iPhone a black pixel is switched off, and the deep
@@ -2673,6 +2678,7 @@ main > .card { max-width: 100%; }
 @media (orientation: landscape) and (max-height: 360px) {
   .gl-3 > .gl-side:has(> .gl-power) { height: 96%; gap: 4px; }
   .gl-side > .gl-trip:has(.gl-odo) { max-height: 96%; }
+  .gl-side > .gl-navside, .gl-3:has(.gl-navside) > .gl-side > .gl-trip, .gl-3:has(.gl-navside) > .gl-side > .gl-navside { max-height: 96%; }
   .gl-3 > .gl-side:has(> .gl-power) .gl-trace { min-height: 44px; }
   .gl-3 > .gl-side:has(> .gl-power) .gl-trace svg { min-height: 22px; }
   .gl-3 > .gl-side:has(> .gl-power) .gl-minis { margin-top: 4px; }
@@ -2892,6 +2898,9 @@ main > .card { max-width: 100%; }
 .gl-dots button.cb.on { width: 8px; border-radius: 2px; }
 /* Round Mix */
 .gl-rmix { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 10px; align-items: stretch; }
+/* Round Mix's power and efficiency columns slimmer, for a wider map. */
+.gl-rmix .gl-ladder { min-width: 48px; max-width: 56px; }
+.gl-rmix .gl-ladder b small { display: block; margin: 1px 0 0; line-height: 1; }
 .gl-rmix-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .gl-rmix-col .gl-hud-stat { flex: 1 1 0; display: flex; flex-direction: column; justify-content: center; }
 .gl-rmix-col .gl-hud-stat strong { font-size: clamp(18px, min(calc(7 * var(--gh)), calc(4.4 * var(--gw))), 34px); }
@@ -2973,7 +2982,9 @@ main > .card { max-width: 100%; }
 .gl-dim .gl-kb { box-shadow: none; border-color: #12181f; opacity: .7; }
 
 /* The round gauge takes the middle; the trip and power cards beside it are slimmer. */
-.gl-rmix { grid-template-columns: minmax(0, .62fr) minmax(0, 1.76fr) minmax(0, .62fr); grid-template-rows: minmax(0, 1fr); }
+/* The trip boxes and the map the same width either side, the dial centred
+   between them; the middle (two slim bars and the dial) takes what is left. */
+.gl-rmix { grid-template-columns: minmax(0, .76fr) minmax(0, 1.48fr) minmax(0, .76fr); grid-template-rows: minmax(0, 1fr); }
 .gl-rmix-mid { min-height: 0; }
 .gl-rmix-mid svg { width: 100%; height: 100%; }
 .gl-rmix-col .gl-hud-stat strong { font-size: clamp(16px, min(calc(5.6 * var(--gh)), calc(3.4 * var(--gw))), 28px); }
@@ -3324,6 +3335,7 @@ main > .card { max-width: 100%; }
 .gl-map-host .leaflet-control-attribution { pointer-events: auto; background: rgba(5, 8, 12, .6) !important;
   color: #6b7a8e; font-size: 8.5px; line-height: 1.4; padding: 0 5px; }
 .gl-map-host .leaflet-control-attribution a { color: #8a98ad; }
+
 .gl-map-wait { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center;
   color: var(--muted); font: 600 13px system-ui, sans-serif; letter-spacing: .04em;
   background: rgba(8, 12, 18, .82); text-align: center; padding: 0 10px; }
@@ -3398,7 +3410,7 @@ main > .card { max-width: 100%; }
 .gl-mapo-batt b small { font-size: 8.5px; margin-left: 3px; }
 
 /* Cockpit parked: the last trip over the map. */
-.gl-mapo-last { flex-direction: column; align-items: stretch; gap: 3px; }
+.gl-mapo-last { flex-direction: column; align-items: stretch; gap: 6px; }
 .gl-mapo-last em { font: 600 10px system-ui, sans-serif; letter-spacing: .1em; text-transform: uppercase; color: #22d3ee; font-style: normal; }
 .gl-mapo-last > div { display: flex; justify-content: space-between; gap: 6px; }
 .gl-mapo-last b.tone-good, .gl-mapo-last b.good { color: var(--green); }
@@ -3436,6 +3448,9 @@ main > .card { max-width: 100%; }
 .gl-map-rot { position: absolute; inset: auto; transform-origin: 50% 50%; transition: transform .35s linear; will-change: transform; }
 .gl-map-credit { position: absolute; right: 4px; bottom: 2px; z-index: 6; font: 8.5px system-ui, sans-serif; color: #6b7a8e;
   background: rgba(5, 8, 12, .6); padding: 0 5px; border-radius: 3px; pointer-events: none; }
+/* The credit stays one line, cut short if it must: wrapped in a narrow side
+   box, its second line ran into the kW badge. */
+.gl-map-credit { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: calc(100% - 70px); }
 
 /* No position known: no car arrow on the map. */
 .gl-map-nocar .gl-map-carfix { display: none; }
@@ -3523,6 +3538,10 @@ main > .card { max-width: 100%; }
   letter-spacing: .1em; text-transform: uppercase; color: #22d3ee; margin-bottom: 2px; }
 .gl-nv-now.solo { margin-top: 0; border-top: 0; row-gap: min(2vh, 12px); }
 .gl-numsv.cut2 .gl-nv-mini .o2, .gl-numsv.cut1 .gl-nv-mini .o1, .gl-numsv.cut0 .gl-nv-head span { display: none; }
+/* Still too tall: the heading goes, then the figures come down a size. */
+.gl-numsv.cuth .gl-nv-head { display: none; }
+.gl-numsv.cutf .gl-nv-mini { row-gap: 2px; padding-top: 4px; }
+.gl-numsv.cutf .gl-nv-mini b { font-size: min(8cqw, 4.4vh, 22px); }
 /* Navigating, the route's figures stay; the trip under them gives way. */
 .gl-numsv.cut1 .gl-nv-delay, .gl-numsv.cut0 .gl-nv-nav ~ .gl-nv-trip { display: none; }
 /* The smallest phones: the dots close up so the flip chip still fits. */
@@ -3563,3 +3582,6 @@ main > .card { max-width: 100%; }
 .gl-mapd .gl-nv-full b { font-size: min(3cqw, 6.2vh, 28px); }
 .gl-mapd .gl-nv-full b small { font-size: min(1.5cqw, 2.9vh, 11px); }
 .gl-mapd .gl-nv-left b { font-size: min(3.2cqw, 6.4vh, 30px); }
+.gl-nv-th { grid-column: 1 / -1; display: flex; gap: 8px; align-items: baseline; min-width: 0; font: 700 min(1.6cqw, 3vh, 12px)/1.2 system-ui, sans-serif;
+  font-style: normal; letter-spacing: .1em; text-transform: uppercase; color: #22d3ee; }
+.gl-nv-th span { font-weight: 600; letter-spacing: .02em; text-transform: none; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
