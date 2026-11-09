@@ -3333,6 +3333,10 @@ main > .card { max-width: 100%; }
    which on iPhone can stop the page's touch-action: none reaching inside it,
    so it is set here on the box and everything in it. */
 #glance .gl-map-slot, #glance .gl-map-slot * { touch-action: none; }
+/* The new view slides in from the side the swipe went (GL_FLIPIN). */
+.gl-flipin { animation: gl-flipin .24s ease-out; }
+@keyframes gl-flipin { from { translate: 0 calc(var(--fd, 1) * 26px); opacity: .35; } to { translate: 0 0; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .gl-flipin { animation: none; } }
 .gl-map-host .leaflet-container, .gl-map-host.leaflet-container { background: #05080c; font: 10px system-ui, sans-serif; }
 /* CARTO's dark map is very dark on a phone in a car: lifted so the streets,
    their names and the buildings read at a glance. */
@@ -3526,6 +3530,10 @@ main > .card { max-width: 100%; }
 /* Map or numbers (glMapArea): the flip button on the map's right edge, and
    the figures-only view in the map's own box. Sized to the box's width. */
 .gl-flipchip { cursor: pointer; letter-spacing: .06em; }
+.gl-zoomchip { cursor: pointer; min-width: 30px; justify-content: center; font-weight: 700; font-size: 15px; line-height: 1; }
+.gl-zoomchip:active { background: rgba(34, 211, 238, .25); }
+/* Small phones (iPhone SE and smaller): no room for the zoom chips beside the dots; a pinch or double tap still zooms. */
+@media (max-width: 700px) { .gl-zoomchip { display: none; } }
 .gl-flipchip:active { background: rgba(34, 211, 238, .25); }
 /* A side box's figures (glNumsView, no destination): a heading, the trip two
    across, then the battery now. Sized by the box's width and the screen's
@@ -3590,3 +3598,66 @@ main > .card { max-width: 100%; }
 .gl-nv-th { grid-column: 1 / -1; display: flex; gap: 8px; align-items: baseline; min-width: 0; font: 700 min(1.6cqw, 3vh, 12px)/1.2 system-ui, sans-serif;
   font-style: normal; letter-spacing: .1em; text-transform: uppercase; color: #22d3ee; }
 .gl-nv-th span { font-weight: 600; letter-spacing: .02em; text-transform: none; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* A narrow map (the Dial's on a small phone): the last-trip strip keeps
+   km, min and Wh/km; the average speed is in the trip panel beside it. */
+@container (max-width: 210px) { .gl-mapo-last > div > b:nth-child(3) { display: none; } }
+/* Dimmed, the frame's corner arcs fade with the rest of the frame. */
+.gl-dim .gl-main::after { opacity: .25; }
+
+/* Dial: a car's instrument cluster (glAltSkin 5). Speed and power dials
+   either side of the map, the trip as a strip along the bottom. */
+.gl-twin { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto; gap: 10px 16px; align-items: stretch; }
+.gl-twin-dial { min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; position: relative; isolation: isolate; }
+.gl-twin-dial > svg { height: 94.5%; width: auto; max-width: 100%; aspect-ratio: 1; filter: drop-shadow(0 10px 14px rgba(0,0,0,.7)); }
+/* Its ring sits a little high in the drawing: moved down to centre it, so
+   both dials are the same size (82% of the row) with equal room above and below. */
+.gl-twin-spd > svg { aspect-ratio: 218 / 224; translate: 0 2.7%; }
+/* The power dial wears a bezel like the speed dial's, so the pair match. */
+.gl-twin-pwr::before { content: ""; position: absolute; aspect-ratio: 1; height: calc(var(--twd, 89%) - 6px); max-width: 100%; border-radius: 50%; z-index: -1; translate: 0 -2px;
+  background: radial-gradient(circle at 50% 38%, #1b2533, #070b10 70%);
+  box-shadow: 0 0 0 2px #3a4656, 0 0 0 3px #5b6b80, inset 0 0 30px rgba(0,0,0,.8), 0 0 14px color-mix(in srgb, var(--tc) 22%, transparent); }
+.gl-twin-pwr > svg { height: calc((var(--twd, 89%) - 6px) * .9); translate: 0 -2px; }
+.gl-twin .gl-twin-map { transform: none; min-height: 0; border-radius: 16px; }
+.gl-twin-strip { grid-column: 1 / -1; display: flex; align-items: stretch; gap: 8px; min-width: 0; }
+.gl-twin-h { align-self: center; font: 700 clamp(9px, calc(2.4 * var(--gh)), 12px) system-ui, sans-serif; letter-spacing: .1em; text-transform: uppercase;
+  color: #22d3ee; writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; }
+.gl-twin-strip .gl-hud-stat { flex: 1 1 0; min-width: 0; padding: 4px 8px; }
+.gl-twin-strip .gl-hud-stat strong { font-size: clamp(14px, calc(4.6 * var(--gh)), 24px); }
+.gl-dim .gl-twin-pwr::before { box-shadow: 0 0 0 2px #1c232c, inset 0 0 30px rgba(0,0,0,.8); }
+.gl-twin-strip .gl-hud-stat span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+/* Beside the dials, as on a car's cluster: the gear by the speed dial, a
+   battery gauge (like a fuel gauge) by the power dial. */
+.gl-twin-cell { min-width: 0; min-height: 0; display: flex; align-items: center; gap: 8px; }
+.gl-twin-cell > .gl-twin-dial { flex: 1 1 auto; height: 100%; }
+.gl-twin-gear { flex: 0 0 auto; display: flex; flex-direction: column; gap: clamp(2px, 1vh, 8px); padding: 6px 4px;
+  border: 1px solid #1d2a38; border-radius: 10px; background: rgba(5, 10, 16, .6); }
+.gl-twin-gear b { display: grid; place-items: center; width: clamp(18px, 6vh, 28px); height: clamp(18px, 6vh, 28px); border-radius: 6px;
+  font: 800 clamp(11px, 3.6vh, 17px)/1 system-ui, sans-serif; color: #3d4a5b; }
+.gl-twin-gear b.on { color: #e8fbff; background: color-mix(in srgb, var(--spd, #22d3ee) 25%, transparent);
+  box-shadow: 0 0 0 1px var(--spd, #22d3ee), 0 0 10px color-mix(in srgb, var(--spd, #22d3ee) 50%, transparent); }
+.gl-twin-batt { flex: 0 0 auto; height: 82%; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.gl-twin-batt b { font: 800 clamp(13px, 4.4vh, 22px)/1 ui-monospace, Menlo, monospace; color: var(--c); }
+.gl-twin-batt b small { font-size: .55em; margin-left: 1px; }
+.gl-twin-cells { flex: 1 1 auto; min-height: 0; width: clamp(16px, 4.6vh, 24px); display: flex; flex-direction: column; gap: 2px; padding: 3px;
+  border: 1px solid #2a3a4c; border-radius: 6px; background: #05080c; }
+.gl-twin-cells i { flex: 1 1 0; border-radius: 2px; background: #121a24; }
+.gl-twin-cells i.on { background: var(--c); box-shadow: 0 0 6px color-mix(in srgb, var(--c) 60%, transparent); }
+.gl-twin-batt em { font: 600 clamp(8px, 2.6vh, 11px)/1 system-ui, sans-serif; font-style: normal; color: var(--muted); white-space: nowrap; }
+.gl-dim .gl-twin-gear b:not(.on), .gl-dim .gl-twin-cells i:not(.on), .gl-dim .gl-twin-batt em { opacity: .4; }
+@media (max-width: 700px) { .gl-twin-cell { gap: 5px; } .gl-twin-gear { padding: 4px 2px; } .gl-twin-gear b { width: 18px; height: 18px; font-size: 11px; } }
+
+/* Parked, the Cockpit's battery under the map: one slim line, so the map
+   keeps most of the height. */
+.gl-battbar-slim { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 5px 10px !important; }
+.gl-battbar-slim .gl-battbar-top { flex: 0 0 auto; gap: 8px; }
+.gl-battbar-slim .gl-battbar-top strong { font-size: clamp(14px, calc(4 * var(--gh)), 19px); }
+.gl-battbar-slim .gl-battbar-cell { flex: 1 1 auto; margin-top: 0 !important; height: 12px; }
+.gl-battbar-slim { margin-top: 4px; min-width: 0; }
+/* Narrow: the bar goes under the figures rather than out of the box. */
+@media (max-width: 760px) { .gl-battbar-slim { flex-wrap: wrap; row-gap: 3px; } .gl-battbar-slim .gl-battbar-cell { flex-basis: 100%; height: 9px; } }
+@media (max-width: 760px) { .gl-battbar-slim { padding: 4px 8px !important; } .gl-battbar-slim .gl-battbar-top { gap: 4px; min-width: 0; flex: 1 1 100%; }
+  .gl-battbar-slim .gl-battbar-top span { font-size: 9.5px; letter-spacing: .04em; } .gl-battbar-slim .gl-battbar-top strong { font-size: 15px; } }
+.gl-navside > .gl-battbar { margin-top: 3px; }

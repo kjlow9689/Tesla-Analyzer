@@ -5157,14 +5157,15 @@ function glKeyBar(c) {
   const { t, nw } = c;
   const now = new Date();
   const hh = String(now.getHours()).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0");
-  // The mix designs carry the odometer as a row of drums (Round Mix, Digital Mix
-  // and the Cockpit already show it in their own way).
-  const odoChip = [7, 9, 2, 11].includes(c.skin) && c.odo != null
+  // The mix designs and the Dial carry the odometer as a row of drums (Round
+  // Mix, Digital Mix and the Cockpit already show it in their own way).
+  const odoChip = [7, 9, 2, 11, 5].includes(c.skin) && c.odo != null
     ? `<span class="gl-kb gl-kodo"><em>Odo km</em><span class="gl-drum">${String(Math.round(c.odo)).split("").map((d) => `<b>${d}</b>`).join("")}</span></span>` : "";
   const chips = [
     odoChip,
     `<span class="gl-kb"><em>Time</em><b>${hh}</b></span>`,
-    c.rangeHere != null || c.range != null ? `<span class="gl-kb gl-opt"><em>Range</em><b>${c.n(c.rangeHere != null ? c.rangeHere : c.range)} km</b></span>` : "",
+    // Not on the Dial: its battery gauge shows the range already.
+    c.skin !== 5 && (c.rangeHere != null || c.range != null) ? `<span class="gl-kb gl-opt"><em>Range</em><b>${c.n(c.rangeHere != null ? c.rangeHere : c.range)} km</b></span>` : "",
     nw.out_temp != null ? `<span class="gl-kb gl-opt"><em>Outside</em><b>${c.n(nw.out_temp, 0)}°C</b></span>` : "",
     // The car's own navigation when a destination is set; else the app's
     // guess at the nearest saved place.
@@ -5179,8 +5180,20 @@ function glKeyBar(c) {
     // so far, which none of them shows anywhere else.
     t && t.energy_kwh != null && c.costRate != null && [2, 5, 8].includes(c.skin)
       ? `<span class="gl-kb gl-opt"><em>Cost</em><b>${c.h(c.cur)} ${c.n(t.energy_kwh * c.costRate, 2, true)}</b></span>` : "",
+    // Parked: charging now, else when the car last charged and to what.
+    !t && nw.charging ? `<span class="gl-kb gl-opt"><em>Charging</em><b>${nw.power_kw != null ? c.n(Math.abs(nw.power_kw), 1) + " kW" : "now"}</b></span>` : "",
+    !t && !nw.charging ? glLastChargeChip(c) : "",
   ];
   return `<div class="gl-keybar">${chips.join("")}</div>`;
+}
+function glLastChargeChip(c) {
+  const lc = lastData && lastData.last_charge;
+  const at = lc && Date.parse(lc.end_time || lc.start_time || "");
+  if (!at) return "";
+  const hrs = Math.max(0, (Date.now() - at) / 3600000);
+  const ago = hrs < 1 ? "just now" : hrs < 48 ? `${Math.round(hrs)} h ago` : `${Math.round(hrs / 24)} d ago`;
+  // Kept when space is short: the range and outside chips give way first.
+  return `<span class="gl-kb"><em>Charged</em><b>${ago}${lc.end_soc != null ? " · " + c.n(lc.end_soc) + "%" : ""}</b></span>`;
 }
 function glAltSkin(skin, c) {
   c.skin = skin; c.h = h;
@@ -5555,40 +5568,42 @@ function glAltPage(skin, c) {
     </div>`;
   }
   if (skin === 5) {
-    // Dial: the 3D gauge with a needle, between two digital LED bars: power
-    // on the left and battery on the right, each with a lit readout.
-    const NSEG = 24, ZERO = 7;                  // power: segments below ZERO are regen
-    const stops = [[0, "#22d3ee"], [.35, "#2ee86a"], [.6, "#ffe03a"], [.8, "#ff8a1f"], [1, "#ff3b3b"]];
-    const powerCol = (f) => (stops.find(([x]) => f <= x) || stops[stops.length - 1])[1];
-    const battCol = (pc) => (pc < 20 ? "#ff3b3b" : pc < 35 ? "#ff8a1f" : pc < 55 ? "#ffe03a" : "#2ee86a");
-    const regen = kw != null && kw < 0;
-    const litDrive = kw != null && kw > 0 ? Math.max(1, Math.round(Math.min(150, kw) / 150 * (NSEG - ZERO))) : 0;
-    const litRegen = regen ? Math.max(1, Math.round(Math.min(60, -kw) / 60 * ZERO)) : 0;
-    let pseg = "";
-    for (let i = 0; i < NSEG; i++) {
-      const on = i >= ZERO ? i < ZERO + litDrive : i >= ZERO - litRegen && regen;
-      const col = i >= ZERO ? powerCol((i - ZERO + 1) / (NSEG - ZERO)) : "#2ee86a";
-      pseg += `<i class="${on ? "on" : ""}${i === ZERO ? " zero" : ""}" style="--c:${col}"></i>`;
-    }
-    const pwTone = kw == null ? "#7e93ab" : regen ? "#2ee86a" : powerCol(Math.min(1, kw / 150));
-    const bTone = pct == null ? "#7e93ab" : battCol(pct);
-    const led = (label, segs, ghost, value, unit, tone, scale) => `<div class="gl-ledcol">
-      <span>${label}</span>
-      <div class="gl-led-bar"><div class="gl-led-segs">${segs}</div><div class="gl-led-scale">${scale}</div></div>
-      <div class="gl-digi" style="--c:${tone}"><i>${ghost}</i><b>${value}</b><small>${unit}</small></div></div>`;
+    // Dial: a car's instrument cluster. Two needle dials, speed on the left
+    // and power on the right (regen below zero, in green), the map between
+    // them with the arrival over it, and the trip as a strip along the
+    // bottom: this drive's figures, or parked the last trip's.
     const nav = c.nav;
-    return `<div class="gl-page gl-alt gl-dialpage gl-dialmap">
-      ${led(regen ? "Regen" : "Power", pseg, "88.8", kwShown, "kW", pwTone, "<em>150</em><em>75</em><em>0</em><em>regen</em>")}
-      <div class="gl-dialbox">${glLadder("regen", c)}${glGauge3D(spd, col, nw, null, true)}${glLadder("whkm", { ...c, whk })}</div>
-${glMapArea("dial", `<div class="gl-map-slot gl-map-mini gl-dial-map" data-map="mini">
+    const pwr = kw != null ? +kw : null;
+    const pwTone = pwr == null ? "#7e93ab" : pwr < 0 ? "#2ee86a" : pwr > 110 ? "#ff3b3b" : pwr > 60 ? "#ffb020" : "#22d3ee";
+    const power = glDial({ value: pwr == null ? 0 : Math.max(-60, Math.min(150, pwr)), min: -60, max: 150, step: 15,
+      bands: [{ from: -60, to: 0, colour: "#2ee86a" }, { from: 0, to: 60, colour: "#22d3ee" }, { from: 60, to: 110, colour: "#ffb020" }, { from: 110, to: 150, colour: "#ff3b3b" }],
+      centre: pwr == null ? "—" : n(Math.abs(pwr), 1), unit: pwr != null && pwr < 0 ? "kW regen" : "kW", colour: pwTone, label: pwr != null && pwr < 0 ? "Regen" : "Power" });
+    const src = t || lt;
+    const strip = [
+      stat("km", dist != null ? n(dist, 1, true) : "—"), stat("min", mins != null ? n(mins) : "—"),
+      // Range is in the key bar above: the top speed instead, beside the average.
+      stat("avg", avg != null ? n(avg) : "—"), stat("top", src && src.max_speed_kmh != null ? n(src.max_speed_kmh) : "—"),
+      stat("Wh/km", whk != null ? n(whk, 1, true) : "—", t ? twTone : ""),
+      // The battery is in its gauge beside the power dial: the energy here.
+      stat("kWh", src && src.energy_kwh != null ? n(src.energy_kwh, 2) : "—"),
+    ].join("");
+    return `<div class="gl-page gl-alt gl-twin">
+      <div class="gl-twin-cell"><span class="gl-twin-gear">${["P", "R", "N", "D"].map((g) => `<b class="${(nw.shift || "P") === g ? "on" : ""}">${g}</b>`).join("")}</span>
+        <div class="gl-twin-dial gl-twin-spd">${glGauge3D(spd, col, nw, null, true)}</div></div>
+${glMapArea("dial", `<div class="gl-map-slot gl-map-mini gl-twin-map" data-map="mini">
         ${nw.lat == null ? '<div class="gl-map-wait">Waiting for the car\'s location…</div>' : ""}
-        ${nav ? `<div class="gl-mapo gl-mapo-mini gl-mapo-stack">
+        ${nav ? `<div class="gl-mapo gl-mapo-mini">
           ${nav.minutes != null ? `<b>${glClockIn(nav.minutes)}<small>${h(glNavName(nav.name) || "arrive")}</small></b>` : ""}
-          ${nav.km != null ? `<b>${n(nav.km, 1, true)}<small>km to go</small></b>` : ""}
+          ${nav.km != null ? `<b>${n(nav.km, 1, true)}<small>km</small></b>` : ""}
           ${nav.arrive_pct != null ? `<b class="${nav.arrive_pct < 15 ? "warn" : "good"}">${n(nav.arrive_pct)}<small>% arrive</small></b>` : ""}
         </div>` : ""}
-        <div class="gl-mapo gl-mapo-batt" style="--c:${bTone}"><b>${pct != null ? n(pct, 1, true) : "—"}<small>% batt</small></b></div>
-      </div>`, { ...c, nav, n })}
+      </div>`, { ...c, nav, n, navOnly: true })}
+      <div class="gl-twin-cell"><div class="gl-twin-dial gl-twin-pwr">${power}</div>
+        <div class="gl-twin-batt" style="--c:${pct == null ? "#7e93ab" : pct < 20 ? "#ff3b3b" : pct < 35 ? "#ff8a1f" : "#2ee86a"}">
+          <b>${pct != null ? n(pct, 1, true) : "—"}<small>%</small></b>
+          <span class="gl-twin-cells">${Array.from({ length: 10 }, (_, i) => `<i class="${pct != null && pct >= (9 - i) * 10 + 5 ? "on" : ""}"></i>`).join("")}</span>
+          <em>${range != null ? n(range) + " km" : ""}</em></div></div>
+      <div class="gl-twin-strip"><span class="gl-twin-h">${src ? (t ? "This drive" : "Last trip") : "Trip"}</span>${strip}</div>
     </div>`;
   }
   if (skin === 6) {
@@ -5785,20 +5800,28 @@ function glMapFlip(key) {
 // box of the same classes (so the same size and place).
 // The button that flips it lives in the footer strip (glFlipChip), off the
 // map, so it never covers the route.
+// After a swipe flips a box, the next draw slides the new view in from the
+// side the finger went (once: the draws after it must not replay it).
+const GL_FLIPIN = { key: null, dir: 1 };
 function glMapArea(key, slot, o) {
+  let fin = "";
+  if (GL_FLIPIN.key === key) { fin = ` style="--fd:${GL_FLIPIN.dir}"`; GL_FLIPIN.key = null; }
+  const inCls = fin ? " gl-flipin" : "";
   if (!glMapIsNums(key)) {
     const at = slot.indexOf('<div class="gl-map-slot');
-    return slot.slice(0, at) + slot.slice(at).replace('<div class="gl-map-slot', `<div data-mapflip="${key}" class="gl-map-slot`);
+    return slot.slice(0, at) + slot.slice(at).replace('<div class="gl-map-slot', `<div data-mapflip="${key}"${fin} class="gl-map-slot${inCls}`);
   }
   const cls = (slot.match(/<div class="(gl-map-slot[^"]*)"/) || [, "gl-map-slot"])[1];
-  return `<div class="${cls} gl-numsv" data-mapflip="${key}">${glNumsView(o, cls.includes("gl-map-mini"))}</div>`;
+  return `<div class="${cls} gl-numsv${inCls}" data-mapflip="${key}"${fin}>${glNumsView(o, cls.includes("gl-map-mini"))}</div>`;
 }
 // The footer's flip chip, for a page with a map (or its figures) on it.
 function glFlipChip(body) {
   const key = (String(body).match(/data-mapflip="(\w+)"/) || [])[1];
   if (!key) return "";
   const nums = glMapIsNums(key);
-  return `<button type="button" class="gl-chip gl-flipchip" data-mapflip-btn="${key}" aria-label="${nums ? "Show the map" : "Show the figures"}">${nums ? "Map" : "123"}</button>`;
+  // With the map showing, - and + to zoom it by hand (see glZoomBy).
+  const zoom = nums ? "" : `<button type="button" class="gl-chip gl-zoomchip" data-gl-zoom="-1" aria-label="Zoom the map out">−</button><button type="button" class="gl-chip gl-zoomchip" data-gl-zoom="1" aria-label="Zoom the map in">+</button>`;
+  return `${zoom}<button type="button" class="gl-chip gl-flipchip" data-mapflip-btn="${key}" aria-label="${nums ? "Show the map" : "Show the figures"}">${nums ? "Map" : "123"}</button>`;
 }
 function glNumsView(o, mini) {
   const { nav, t, lt, kw, pct, tw, n, spd, nw, navOnly } = o;
@@ -6045,7 +6068,9 @@ function renderGlance(d) {
         const hist = glLiveState.hist || [];
         const traceHtml = glEffTrace(hist, rated);
         return { body: glAltSkin(glLiveSkin, {
-          t, nw, spd, kw: inst && inst.kw != null ? inst.kw : null, tw: twA, pct, odo: odoA, hist, regenKwh: t && t.regen_kwh != null ? t.regen_kwh : null,
+          // The battery: the car's own reading, else (parked, the car not yet
+          // heard from since a restart) the dashboard's, as the Cockpit does.
+          t, nw, spd, kw: inst && inst.kw != null ? inst.kw : null, tw: twA, pct: pct ?? (bal && (bal.current_level_pct ?? bal.current_soc_pct)) ?? null, odo: odoA, hist, regenKwh: t && t.regen_kwh != null ? t.regen_kwh : null,
           range: nw.range_km ?? null, rated, lt, trace: traceHtml,
           nowWh: inst && inst.whkm != null ? inst.whkm : null,
           rangeHere: nw.energy_kwh != null && twA > 0 ? nw.energy_kwh * 1000 / twA : null, n,
@@ -6080,11 +6105,26 @@ function renderGlance(d) {
         return page(
           `<div class="gl-trip">
             <div class="gl-trip-h"><b class="rec idle"></b>Car now<em>${!L ? "connecting…" : nw.age_sec != null ? `${nw.age_sec < 90 ? nw.age_sec + "s" : Math.round(nw.age_sec / 60) + " min"} ago` : ""}</em></div>
-            <div class="gl-rts">
+            ${lt ? glVPages([[
+              // The car now, as before; then, a flick up or down, the last trip.
+              tile("batt", "Batt %", pctShown != null ? n(pctShown, 1, true) : "—", pctShown != null && pctShown < 20 ? "warn" : "good"),
+              tile("range", "Range km", rangeShown != null ? n(rangeShown) : "—"),
+              tile("odo", "Odometer km", odo != null ? fmt(odo) : "—", "", "wide"),
+            ], [
+              tile("dist", "Trip km", lt.distance_km != null ? n(lt.distance_km, 1, true) : "—"),
+              tile("time", "Trip min", lt.duration_min != null ? n(lt.duration_min) : "—"),
+              tile("speed", "Trip avg", lt.avg_speed_kmh != null ? n(lt.avg_speed_kmh) : "—"),
+              tile("speed", "Trip top", lt.max_speed_kmh != null ? n(lt.max_speed_kmh) : "—"),
+            ], [
+              tile("whkm", "Trip Wh/km", lt.wh_per_km != null ? n(lt.wh_per_km, 1, true) : "—", ltTone),
+              tile("regen", "Trip kWh", lt.energy_kwh != null ? n(lt.energy_kwh, 2) : "—"),
+              tile("batt", "Batt used %", lt.soc_used_pct != null ? n(lt.soc_used_pct, 1, true) : "—"),
+              tile("cost", `Trip ${cur || "RM"}`, lt.cost != null ? n(lt.cost, 2, true) : "—"),
+            ]]) : `<div class="gl-rts">
               ${tile("batt", "Batt %", pctShown != null ? n(pctShown, 1, true) : "—", pctShown != null && pctShown < 20 ? "warn" : "good")}
               ${tile("range", "Range km", rangeShown != null ? n(rangeShown) : "—")}
               ${tile("odo", "Odometer km", odo != null ? fmt(odo) : "—", "", "wide")}
-            </div>
+            </div>`}
           </div>`,
           glSpeedo({ value: spd, max: 160, gear: nw.shift, acc: glLiveState.acc, label: "Speed" }),
           // The map of where the car stands, the last trip over it.
@@ -6100,7 +6140,10 @@ function renderGlance(d) {
               <b>${lt.avg_speed_kmh != null ? n(lt.avg_speed_kmh) : "—"}<small>avg km/h</small></b>
               <b class="${ltTone}">${n(lt.wh_per_km, 1, true)}<small>Wh/km</small></b></div>
             </div>` : ""}
-          </div>`, { nav: (L && L.nav) || null, t: null, lt, kw: null, pct, tw: null, n, navOnly: true })}</div>`,
+          </div>`, { nav: (L && L.nav) || null, t: null, lt, kw: null, pct, tw: null, n, navOnly: true })}
+          <div class="gl-battbar gl-battbar-slim">
+            <div class="gl-battbar-top"><span>Battery${rangeShown != null ? `<em class="gl-rated">${n(rangeShown)} km</em>` : ""}</span><strong>${pctShown != null ? n(pctShown, 1, true) : "—"}<small>%</small></strong></div>
+            <div class="gl-battbar-cell"><i style="width:${pctShown ?? 0}%;background:${(pctShown ?? 0) < 20 ? "#ff6b70" : "var(--green)"}"></i></div></div></div>`,
           foot);
       }
       // Energy over distance, as the car's "Current Drive" shows it.
@@ -6443,7 +6486,7 @@ function glMapGoogleFailed() {
   GL_MAP.gFailed = true;
   if (GL_MAP.kind === "google") {
     if (GL_MAP.host) GL_MAP.host.remove();
-    GL_MAP.host = null; GL_MAP.eng = null; GL_MAP.kind = null; GL_MAP.zoomKey = null; GL_MAP.routeV = null;
+    GL_MAP.host = null; GL_MAP.eng = null; GL_MAP.kind = null; GL_MAP.zoomKey = null; GL_MAP.routeV = null; GL_ZOOM.cur = null;
   }
   glMapRedraw();
 }
@@ -6603,6 +6646,12 @@ function glMapGoogle(host) {
         map.moveCamera({ center: ll(ahead(p, z)), zoom: z, heading, tilt });
       } else { map.setZoom(z); map.setCenter(ll(p)); }
     },
+    // A zoom step on the way to a new zoom (GL_ZOOM): fractional on the
+    // vector map, so it glides; the older raster map takes whole levels.
+    zoomTo(p, z) {
+      if (vec) map.moveCamera({ center: ll(ahead(p, z)), zoom: z, heading, tilt });
+      else if (Math.round(z) !== map.getZoom()) { map.setZoom(Math.round(z)); map.setCenter(ll(p)); }
+    },
     // A frame (many a second): an instant move, the frames make the motion.
     // A redraw (once a second, car slow or stopped): a short pan.
     follow(p, frame) {
@@ -6630,7 +6679,7 @@ function glMapLeaflet(host) {
   credit.textContent = "© OpenStreetMap contributors © CARTO";
   host.append(inner, fixCar, credit);
   const map = L.map(inner, { zoomControl: false, dragging: false, touchZoom: false, scrollWheelZoom: false,
-    doubleClickZoom: false, boxZoom: false, keyboard: false, tap: false, fadeAnimation: false,
+    doubleClickZoom: false, boxZoom: false, keyboard: false, tap: false, fadeAnimation: false, zoomSnap: 0,
     attributionControl: false });
   // {r} asks CARTO for its sharp @2x tiles on a high-density screen, at the
   // normal label size (detectRetina would also step the zoom up a level,
@@ -6681,6 +6730,7 @@ function glMapLeaflet(host) {
       inner.style.transform = `rotate(${rot.toFixed(1)}deg)`;
     },
     jump(p, z) { layout(); map.setView(p, z, { animate: false }); },
+    zoomTo(p, z) { map.setView(p, z, { animate: false }); },
     // A frame (many a second): an instant move, the frames make the motion.
     // A redraw (once a second, car slow or stopped): a short glide if bright.
     follow(p, frame) {
@@ -6713,7 +6763,7 @@ function glMapMount(root) {
     const host = document.createElement("div");
     host.className = "gl-map-host gl-map-" + kind;
     slot.prepend(host);
-    GL_MAP.host = host; GL_MAP.kind = kind; GL_MAP.zoomKey = null; GL_MAP.routeV = null; GL_MAP.routeAsk = null;
+    GL_MAP.host = host; GL_MAP.kind = kind; GL_MAP.zoomKey = null; GL_MAP.routeV = null; GL_MAP.routeAsk = null; GL_ZOOM.cur = null;
     GL_MAP.eng = kind === "google" ? glMapGoogle(host) : glMapLeaflet(host);
     if (GL_MAP.route) { GL_MAP.eng.setRoute(GL_MAP.route.points); GL_MAP.trimAt = 0; }
   } else {
@@ -6774,7 +6824,19 @@ function glMapUpdate(mode, frame = false) {
   if (GL_MAP.host) GL_MAP.host.classList.toggle("gl-map-nocar", nw.lat == null);
   if (nw.lat == null) {
     if (nav && nav.dest_lat != null && GL_MAP.zoomKey !== "dest") { eng.jump([nav.dest_lat, nav.dest_lon], 13); GL_MAP.zoomKey = "dest"; }
+    else if (!nav && GL_MAP.zoomKey !== "last") {
+      // Not the whole region at its starting zoom: where this phone last saw
+      // the car (no arrow, and the wait note stays, until the car says).
+      let lp = null;
+      try { lp = JSON.parse(localStorage.getItem("glLastPos") || "null"); } catch (_) { /* none */ }
+      if (Array.isArray(lp) && Number.isFinite(lp[0]) && Number.isFinite(lp[1])) { eng.jump(lp, 15); GL_MAP.zoomKey = "last"; }
+    }
     return;
+  }
+  // Remembered (now and then, not every frame) for the case above.
+  if (!GL_MAP.posSavedAt || Date.now() - GL_MAP.posSavedAt > 30000) {
+    GL_MAP.posSavedAt = Date.now();
+    try { localStorage.setItem("glLastPos", JSON.stringify([+(+nw.lat).toFixed(5), +(+nw.lon).toFixed(5)])); } catch (_) { /* private mode */ }
   }
   // The car: an arrow pointing the way it is heading. Between the car's
   // fixes (one a second) it moves on at the car's speed along its heading,
@@ -6818,14 +6880,64 @@ function glMapUpdate(mode, frame = false) {
   eng.setCar(pos, hd);
   glRouteTrim(eng, pos);
   // Follow the car, closer in town and further out on the highway; the zoom
-  // changes only when the speed crosses a band, so it does not breathe.
+  // changes only when the speed crosses a band, so it does not breathe, and
+  // a step closer in the last kilometre to the destination. A change glides
+  // there (GL_ZOOM); the driver's own zoom (pinch, double tap, the - and +
+  // chips) sits on top until it lapses.
   const v = +nw.speed_kmh || 0;
-  const z = v < 35 ? 17 : v < 70 ? 16 : v < 100 ? 15 : 14;
-  const key = mode + z;
-  if (key !== GL_MAP.zoomKey) {
-    GL_MAP.zoomKey = key;
-    eng.jump(pos, z, mode);
-  } else eng.follow(pos, frame);
+  let z = v < 35 ? 17 : v < 70 ? 16 : v < 100 ? 15 : 14;
+  if (nav && nav.km != null && +nav.km < 1) z = Math.min(18, z + 1);
+  GL_ZOOM.auto = z;
+  if (mode !== GL_MAP.zoomKey || GL_ZOOM.cur == null) {
+    GL_MAP.zoomKey = mode;
+    GL_ZOOM.cur = glZoomTarget();
+    eng.jump(pos, GL_ZOOM.cur, mode);
+  } else {
+    eng.follow(pos, frame);
+    glZoomGo();
+  }
+}
+// The map's zoom: where it is (cur), where speed puts it (auto) and the
+// driver's own steps on top (user), which lapse GL_ZOOM_USER_MS after the
+// last touch. A change is eased over about a second by a short loop of its
+// own, which stops once there; dimmed, it is taken at once.
+const GL_ZOOM = { cur: null, auto: 16, user: 0, userAt: 0, raf: 0, last: 0 };
+const GL_ZOOM_USER_MS = 10000, GL_ZOOM_MIN = 11, GL_ZOOM_MAX = 19;
+function glZoomTarget() {
+  if (GL_ZOOM.user && Date.now() - GL_ZOOM.userAt > GL_ZOOM_USER_MS) GL_ZOOM.user = 0;
+  return Math.max(GL_ZOOM_MIN, Math.min(GL_ZOOM_MAX, GL_ZOOM.auto + GL_ZOOM.user));
+}
+function glZoomGo() {
+  if (GL_ZOOM.raf || GL_ZOOM.cur == null) return;
+  const tgt = glZoomTarget();
+  if (Math.abs(tgt - GL_ZOOM.cur) < 0.005) return;
+  const eng = GL_MAP.eng, disp = GL_MAP.disp;
+  if (!eng || !eng.zoomTo || !disp) return;
+  if (document.body.classList.contains("gl-dim") || document.hidden) { GL_ZOOM.cur = tgt; eng.zoomTo(disp.pos, tgt); return; }
+  GL_ZOOM.last = performance.now();
+  const step = (ts) => {
+    const e = GL_MAP.eng, d = GL_MAP.disp, t = glZoomTarget();
+    if (!e || !d || GL_ZOOM.cur == null) { GL_ZOOM.raf = 0; return; }
+    const k = 1 - Math.exp(-(ts - GL_ZOOM.last) / 260);
+    GL_ZOOM.last = ts;
+    GL_ZOOM.cur += (t - GL_ZOOM.cur) * k;
+    if (Math.abs(t - GL_ZOOM.cur) < 0.01) GL_ZOOM.cur = t;
+    e.zoomTo(d.pos, GL_ZOOM.cur);
+    GL_ZOOM.raf = GL_ZOOM.cur === t ? 0 : requestAnimationFrame(step);
+  };
+  GL_ZOOM.raf = requestAnimationFrame(step);
+}
+// The driver zooms: by whole steps (double tap, the chips) or by a pinch's
+// scale; either way the map eases there and the auto zoom resumes later.
+function glZoomBy(dz, now = false) {
+  if (GL_ZOOM.cur == null) return;
+  const base = GL_ZOOM.auto;
+  GL_ZOOM.user = Math.max(GL_ZOOM_MIN - base, Math.min(GL_ZOOM_MAX - base, (GL_ZOOM.user || 0) + dz));
+  GL_ZOOM.userAt = Date.now();
+  if (now && GL_MAP.eng && GL_MAP.disp) { cancelAnimationFrame(GL_ZOOM.raf); GL_ZOOM.raf = 0; GL_ZOOM.cur = glZoomTarget(); GL_MAP.eng.zoomTo(GL_MAP.disp.pos, GL_ZOOM.cur); }
+  else glZoomGo();
+  clearTimeout(GL_ZOOM.back);
+  GL_ZOOM.back = setTimeout(glZoomGo, GL_ZOOM_USER_MS + 50);
 }
 // Between the car's readings the map moves on by itself, frame by frame,
 // while a map is on screen and the car is moving: each frame places the car
@@ -6912,6 +7024,19 @@ function glFitRow(row) {
 // Sizes that depend on a box's own height, set once per draw: the Cockpit's
 // trip tiles (data-fit on the pager: short, small, tiny) and Mix's speed.
 function glFitSized(root) {
+  // The Dial's power dial takes the speed dial's drawn size, whichever of its
+  // box's height or width limits that (the gear column narrows it on a small
+  // phone): the pair always match.
+  const tsv = root.querySelector(".gl-twin-spd > svg"), tpw = root.querySelector(".gl-twin-pwr");
+  // getBoundingClientRect, not clientHeight: some browsers (older Safari
+  // among them) report 0 for an SVG's client size. The 2.7% translate moves
+  // the box, not its size.
+  const tq = tsv && tsv.getBoundingClientRect();
+  if (tq && tpw && tq.height) {
+    const d = Math.min(tq.height, tq.width * 224 / 218) * 0.943;
+    const v = Math.max(40, Math.round(d)) + "px";
+    if (tpw.style.getPropertyValue("--twd") !== v) tpw.style.setProperty("--twd", v);
+  }
   // A side box's figures: the least needed give way until the rest fit.
   const box = root.querySelector(".gl-map-mini.gl-numsv");
   if (box) {
@@ -8339,35 +8464,81 @@ document.addEventListener("wheel", (e) => {
   glVScrollSet(GL_VSCROLL.f + Math.sign(e.deltaY) / ((+box.dataset.steps) || 1), true);
 }, { passive: false });
 
+// Set by the swipe handler below: drops a swipe in progress (a second finger
+// has come down, so it is a pinch).
+let glSwipeCancel = () => {};
 // Swipe across the Live page to change its design: left or right for the
 // single designs, up or down for the combinations. A swipe has to be mostly
 // along one axis and a good length, and not start at a screen edge (where the
 // browser's own back and home gestures live).
 {
   let sw = null;
+  glSwipeCancel = () => { if (sw) { if (sw.dragged) unfollow(sw.el); sw = null; } };
+  // The map (or its figures) follows a finger dragging up or down, a little,
+  // so a swipe is seen to take; let go short and it springs back.
+  const follow = (dy) => {
+    const el = sw && sw.el;
+    if (!el || !el.isConnected) return;
+    el.style.transition = "none";
+    el.style.translate = `0 ${Math.max(-34, Math.min(34, dy * 0.35)).toFixed(1)}px`;
+    el.style.opacity = String(1 - Math.min(0.35, Math.abs(dy) / 260));
+  };
+  const unfollow = (el) => {
+    if (!el || !el.isConnected) return;
+    el.style.transition = "translate .18s ease-out, opacity .18s ease-out";
+    el.style.translate = ""; el.style.opacity = "";
+  };
+  const moved = (x, y) => {
+    if (!sw) return;
+    sw.lx = x; sw.ly = y;
+    const now = Date.now();
+    sw.hist.push([x, y, now]); if (sw.hist.length > 8) sw.hist.shift();
+    const dx = x - sw.x, dy = y - sw.y;
+    if (sw.el && !sw.vs && Math.abs(dy) > 8 && Math.abs(dy) >= Math.abs(dx)) { sw.dragged = true; follow(dy); }
+    else if (sw.dragged && Math.abs(dx) > Math.abs(dy)) { sw.dragged = false; unfollow(sw.el); }
+  };
   document.addEventListener("pointerdown", (e) => {
+    // A second finger makes it a pinch (see the zoom below), not a swipe.
+    if (!e.isPrimary) { glSwipeCancel(); return; }
     const g = e.target.closest && e.target.closest("#glance");
     const edge = 24;
+    const fl = g && e.target.closest("[data-mapflip]");
     sw = g && glanceTab === "live" && !e.target.closest("button, a, input, select")
       && e.clientX > edge && e.clientX < innerWidth - edge && e.clientY > edge && e.clientY < innerHeight - edge
       ? { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, t: Date.now(), id: e.pointerId,
+          hist: [[e.clientX, e.clientY, Date.now()]], el: fl || null,
           // On the trip tiles an up or down drag scrolls them; only a sideways
           // swipe there changes the design.
           vs: !!e.target.closest("[data-vscroll]"),
-          flip: (e.target.closest("[data-mapflip]") || { dataset: {} }).dataset.mapflip || null } : null;
+          flip: fl ? fl.dataset.mapflip : null } : null;
   }, { passive: true });
   document.addEventListener("pointermove", (e) => {
-    if (sw && e.pointerId === sw.id) { sw.lx = e.clientX; sw.ly = e.clientY; }
+    if (sw && e.pointerId === sw.id) moved(e.clientX, e.clientY);
   }, { passive: true });
   const end = (e, x, y) => {
     if (!sw || e.pointerId !== sw.id) return;
-    const dx = x - sw.x, dy = y - sw.y, dt = Date.now() - sw.t, { flip, vs } = sw;
+    const dx = x - sw.x, dy = y - sw.y, dt = Date.now() - sw.t, { flip, vs, el, dragged } = sw;
+    // How fast the finger was going as it lifted (px per ms, over the last
+    // tenth of a second or so): a quick flick needs less distance.
+    // Measured from the last point before that tenth of a second: the lift
+    // comes where the last move was, so a window holding only that point
+    // would read a flick as standing still.
+    const now = Date.now(), i = sw.hist.findIndex((p) => now - p[2] <= 120);
+    const h = sw.hist[Math.max(0, (i < 0 ? sw.hist.length : i) - 1)];
+    const vy = Math.abs(y - h[1]) / Math.max(16, now - h[2]);
     sw = null;
-    if (dt >= 1200) return;
     const ax = Math.abs(dx), ay = Math.abs(dy);
-    if (ax >= 50 && ax > ay * 1.3) { glHoldRelease(); GL_VSCROLL.drag = null; glSkinStep("h", dx < 0 ? 1 : -1); }
-    // Up or down on a map (or its figures) flips between the two.
-    else if (!vs && ay >= 45 && ay > ax * 1.3) { glHoldRelease(); if (flip) glMapFlip(flip); else glSkinStep("v", dy < 0 ? 1 : -1); }
+    const quick = vy >= 0.35;
+    let did = false;
+    if (dt < 1500) {
+      if (ax >= 50 && ax > ay * 1.3) { glHoldRelease(); GL_VSCROLL.drag = null; glSkinStep("h", dx < 0 ? 1 : -1); did = true; }
+      // Up or down on a map (or its figures) flips between the two: 36px,
+      // or 24px when flicked, and anything steeper than about 45 degrees.
+      else if (flip && !vs && (ay >= 36 || (ay >= 24 && quick)) && ay > ax) {
+        glHoldRelease(); GL_FLIPIN.key = flip; GL_FLIPIN.dir = dy < 0 ? 1 : -1; glMapFlip(flip); did = true;
+      } else if (!flip && !vs && (ay >= 45 || (ay >= 30 && quick)) && ay > ax * 1.3) { glHoldRelease(); glSkinStep("v", dy < 0 ? 1 : -1); did = true; }
+    }
+    if (dragged && !did) unfollow(el);
   };
   document.addEventListener("pointerup", (e) => end(e, e.clientX, e.clientY), { passive: true });
   // A cancelled touch (the phone took the gesture over, which Safari does a
@@ -8382,7 +8553,7 @@ document.addEventListener("wheel", (e) => {
     sw.timer = setTimeout(() => { if (sw && sw.cancelled && sw.id === id) end({ pointerId: id }, sw.lx, sw.ly); }, 1300);
   }, { passive: true });
   document.addEventListener("touchmove", (e) => {
-    if (sw && sw.cancelled && e.touches[0]) { sw.lx = e.touches[0].clientX; sw.ly = e.touches[0].clientY; }
+    if (sw && sw.cancelled && e.touches[0]) moved(e.touches[0].clientX, e.touches[0].clientY);
   }, { capture: true, passive: true });
   document.addEventListener("touchend", (e) => {
     if (!sw || !sw.cancelled) return;
@@ -8394,6 +8565,51 @@ document.addEventListener("wheel", (e) => {
   document.addEventListener("click", (e) => {
     if (e.target.closest && e.target.closest("#glance")) GL_HOLD.until = 0;
   }, { capture: true, passive: true });
+}
+
+// Zoom the map by hand: two fingers apart or together, or a double tap to
+// come in a step. Only on a map showing (not its figures). The driver's zoom
+// sits on top of the auto zoom and lapses after GL_ZOOM_USER_MS (glZoomBy).
+{
+  const pts = new Map();
+  let pinch = null, lastTap = null;
+  const onMap = (e) => { const s = e.target.closest && e.target.closest("#glance .gl-map-slot[data-mapflip]:not(.gl-numsv)"); return s && glanceTab === "live" ? s : null; };
+  const dist = () => { const [a, b] = [...pts.values()]; return Math.hypot(a.x - b.x, a.y - b.y); };
+  document.addEventListener("pointerdown", (e) => {
+    if (!onMap(e)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY, t: Date.now() });
+    if (pts.size === 2 && GL_ZOOM.cur != null) {
+      glSwipeCancel();
+      pinch = { d0: Math.max(20, dist()), u0: GL_ZOOM.user || 0 };
+    }
+  }, { capture: true, passive: true });
+  document.addEventListener("pointermove", (e) => {
+    const p = pts.get(e.pointerId); if (!p) return;
+    p.x = e.clientX; p.y = e.clientY;
+    if (pinch && pts.size === 2) {
+      const dz = Math.log2(dist() / pinch.d0);
+      const base = GL_ZOOM.auto;
+      GL_ZOOM.user = Math.max(GL_ZOOM_MIN - base, Math.min(GL_ZOOM_MAX - base, pinch.u0 + dz));
+      GL_ZOOM.userAt = Date.now();
+      if (GL_MAP.eng && GL_MAP.disp) { cancelAnimationFrame(GL_ZOOM.raf); GL_ZOOM.raf = 0; GL_ZOOM.cur = glZoomTarget(); GL_MAP.eng.zoomTo(GL_MAP.disp.pos, GL_ZOOM.cur); }
+    }
+  }, { capture: true, passive: true });
+  const up = (e) => {
+    const p = pts.get(e.pointerId); if (!p) return;
+    pts.delete(e.pointerId);
+    if (pinch) { if (!pts.size) { pinch = null; glZoomBy(0); } return; }
+    // A tap: short and still. Two within 320ms in the same place: zoom in.
+    if (e.type !== "pointerup" || Date.now() - p.t > 250 || Math.hypot(e.clientX - p.x, e.clientY - p.y) > 12) { lastTap = null; return; }
+    const now = Date.now();
+    if (lastTap && now - lastTap.t < 320 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) { lastTap = null; glZoomBy(1); }
+    else lastTap = { t: now, x: e.clientX, y: e.clientY };
+  };
+  document.addEventListener("pointerup", up, { capture: true, passive: true });
+  document.addEventListener("pointercancel", up, { capture: true, passive: true });
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest("[data-gl-zoom]");
+    if (b) { e.preventDefault(); glZoomBy(+b.dataset.glZoom); }
+  });
 }
 
 // Touch the Live page and the panels tilt towards your finger, a little, for
