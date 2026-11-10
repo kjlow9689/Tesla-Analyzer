@@ -5604,7 +5604,7 @@ ${glMapArea("dial", `<div class="gl-map-slot gl-map-mini gl-twin-map" data-map="
           <b>${pct != null ? n(pct, 1, true) : "—"}<small>%</small></b>
           <span class="gl-twin-cells">${Array.from({ length: 10 }, (_, i) => `<i class="${pct != null && pct >= (9 - i) * 10 + 5 ? "on" : ""}"></i>`).join("")}</span>
           <em>${range != null ? n(range) + " km" : ""}</em></div></div>
-      <div class="gl-twin-strip"><span class="gl-twin-h">${src ? (t ? "This drive" : "Last trip") : "Trip"}</span>${strip}</div>
+      <div class="gl-twin-strip"><span class="gl-twin-h">${src ? (t ? "This<br>drive" : "Last<br>trip") : "Trip"}</span>${strip}</div>
     </div>`;
   }
   if (skin === 6) {
@@ -5786,15 +5786,20 @@ glLiveSkin = GL_SKINS[+glPref("glLiveSkin", "0")] ? +glPref("glLiveSkin", "0") :
 // While the figures show, the map is not on the page at all, so it draws
 // nothing (most of a map design's work on the phone); flipping back puts it
 // straight onto the car. Each design keeps the view it was left on.
-const GL_MAPVIEW = (() => { try { return JSON.parse(glPref("glMapView", "{}")) || {}; } catch (_) { return {}; } })();
-function glMapIsNums(key) { return GL_MAPVIEW[key] === "nums"; }
+// Each design with a map opens on its figures every time the app loads (Map,
+// Cockpit, Round Mix, Dial): no map is loaded or drawn until it is asked
+// for, which is also the cheapest for the phone. The 123 / Map chip, or a
+// swipe up or down on the box, switches a design to its map, and it stays
+// there for the visit; a fresh load starts on the figures again. Nothing is
+// kept between loads.
+const GL_MAPVIEW = { map: "nums", cockpit: "nums", rmix: "nums", dial: "nums" };
+function glMapIsNums(key) { return GL_MAPVIEW[key] !== "map"; }
 document.addEventListener("click", (e) => {
   const b = e.target.closest && e.target.closest("[data-mapflip-btn]");
   if (b) { e.preventDefault(); glMapFlip(b.dataset.mapflipBtn); }
 });
 function glMapFlip(key) {
   GL_MAPVIEW[key] = glMapIsNums(key) ? "map" : "nums";
-  glSave("glMapView", JSON.stringify(GL_MAPVIEW));
   if (lastData) renderGlance(lastData);
 }
 // The map's box as given, with its flip button; or, flipped, the figures in a
