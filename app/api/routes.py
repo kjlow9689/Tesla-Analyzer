@@ -5097,11 +5097,19 @@ def _promote_shadow_charges(session: Session, apply: bool = False,
                 if value is not None and abs(
                         float(getattr(row, field) or 0.0) - float(value)) >= 0.01:
                     fixes[field] = float(value)
+            # A streamed row filed DC that its own figures say was AC (see
+            # _stream_charge_is_dc): its type, and the price that follows
+            # from it. Never a row priced from a receipt.
+            if ((row.source or "") == "telemetry" and row.charge_type == "DC"
+                    and c.get("fast") and not _stream_charge_is_dc(c)
+                    and (row.price_source or "") != "receipt"
+                    and not (getattr(row, "billed_kwh", None) or 0)):
+                fixes["charge_type"] = "AC"
             if fixes:
                 entry["action"] = "correct"
                 entry["corrections"] = {
-                    k: (v.isoformat(timespec="seconds")
-                        if hasattr(v, "isoformat") else round(v, 3))
+                    k: (v.isoformat(timespec="seconds") if hasattr(v, "isoformat")
+                        else v if isinstance(v, str) else round(v, 3))
                     for k, v in fixes.items()}
                 corrections.append((row, fixes, c))
         changed.append(entry)
@@ -5118,6 +5126,21 @@ def _promote_shadow_charges(session: Session, apply: bool = False,
     for row, fixes, c in corrections:
         for field, value in fixes.items():
             setattr(row, field, value)
+        if fixes.get("charge_type") == "AC":
+            lat, lon = c.get("lat"), c.get("lon")
+            where = (f"{float(lat):.4f}, {float(lon):.4f}"
+                     if lat is not None and lon is not None else (row.location or ""))
+            src, rate, _prof = pricing_prefs.resolve_pricing(
+                session, settings, where, False, row.start_time, float(c.get("peak_kw") or 0.0))
+            payable = pricing_prefs.payable_kwh(row.energy_added_kwh, "AC", settings, session=session)
+            row.payable_kwh = round(payable, 3)
+            row.cost = round(payable * rate, 2)
+            row.price_source = src
+            row.is_free = rate == 0
+            if (row.charger_network or "") in ("Tesla", "CCS", "CHAdeMO", "GB"):
+                row.charger_network = (pricing_prefs.place_network(session, row.location, "AC")
+                                       or ("TDC" if row.charger_network == "Tesla" else ""))[:16]
+            _tdc_is_free(row)
         # Duration follows the boundaries it is derived from.
         row.duration_min = round(
             (row.end_time - row.start_time).total_seconds() / 60.0, 1)
@@ -5144,7 +5167,7 @@ def _promote_shadow_charges(session: Session, apply: bool = False,
         lat, lon = c.get("lat"), c.get("lon")
         raw_coords = (f"{float(lat):.4f}, {float(lon):.4f}"
                       if lat is not None and lon is not None else "")
-        fast = bool(c.get("fast"))
+        fast = _stream_charge_is_dc(c)
         loc_label = _place(raw_coords, session) if raw_coords else ""
         source, rate, charger_profile = pricing_prefs.resolve_pricing(
             session, settings, raw_coords or loc_label, fast, c_start,
@@ -5182,8 +5205,11 @@ def _promote_shadow_charges(session: Session, apply: bool = False,
             charger_network=(
                 (str(c.get("network") or "") in (("", "CCS") if fast else ("", "Tesla"))
                  and pricing_prefs.place_network(session, loc_label, "DC" if fast else "AC"))
-                or str(c.get("network") or ""))[:16],
+                # A charger the car names Tesla, on AC, is a destination charger.
+                or ("TDC" if not fast and str(c.get("network") or "") == "Tesla"
+                    else str(c.get("network") or "")))[:16],
         )
+        _tdc_is_free(row)
         session.add(row)
         # Usable capacity is fitted from charges, so a session that only the
         # stream saw has to feed the same EMA a polled one does — otherwise
@@ -5352,6 +5378,14 @@ ARRIVAL_REPAIR_EVERY_SEC = 24 * 3600.0
 ARRIVAL_REPAIR_RECENT_DAYS = 2
 
 
+def _stream_charge_is_dc(c: dict) -> bool:
+    """Whether a streamed charge was DC (sync.stream_charge_is_dc): what the
+    car called it, unless its own meters or power say it ran through the
+    onboard (AC) charger. Re-read here so records closed before that rule
+    are judged by it too."""
+    return sync_mod.stream_charge_is_dc(c)
+
+
 CHARGE_TEMP_DRIVE_GAP_MIN = 60   # a drive ending this close before a charge arrived at it
 
 
@@ -5378,6 +5412,44 @@ def _charge_temp_kw(session: Session, vehicle_id: int, c: dict, c_start: datetim
     if t is None:
         t = _arrival_temp(session, vehicle_id, c_start)
     return {} if t is None else {"outside_temp_c": round(float(t), 1)}
+
+
+def _tdc_is_free(row) -> bool:
+    """A Tesla Destination Charger session is free of charge (the owner's
+    rule, 11 Nov 2026): cost 0 and marked free. Never a session priced from a
+    receipt. Returns whether the row changed."""
+    if (row.charger_network or "") != "TDC" or (row.charge_type or "AC") == "DC":
+        return False
+    if (row.price_source or "") == "receipt" or (row.billed_kwh or 0) > 0:
+        return False
+    if row.is_free and not (row.cost or 0):
+        return False
+    row.cost = 0.0
+    row.is_free = True
+    return True
+
+
+def repair_tdc_free(session: Session) -> int:
+    """Every saved TDC session not yet free is made so. Idempotent."""
+    n = sum(1 for row in session.scalars(
+        select(Charge).where(Charge.charger_network == "TDC")).all() if _tdc_is_free(row))
+    if n:
+        session.commit()
+    return n
+
+
+def repair_streamed_charges(session: Session) -> int:
+    """Run the streamed-charge pass once at start, so a correction to how a
+    saved charge is read (its type, its boundaries) reaches the rows already
+    saved without waiting for the next charge to finish. Adds are held to the
+    same limit as the automatic pass."""
+    try:
+        return sum(1 for c in _promote_shadow_charges(
+            session, apply=True, max_add=PROMOTE_AUTO_MAX_ADD)
+            if c.get("action") == "correct")
+    except Exception:  # noqa: BLE001 - a repair, never a failed start
+        session.rollback()
+        return 0
 
 
 def repair_charge_temps(session: Session) -> int:
@@ -12981,6 +13053,10 @@ def set_charger_network(
             pricing_prefs.remember_place_network(session, c.location, label, kind)
         if new_cost is not None:
             c.price_source, c.cost = "public", new_cost
+        # A destination charger is free of charge.
+        if _tdc_is_free(c):
+            plan["cost"] = [plan.get("cost", [None])[0], 0.0]
+            plan["is_free"] = True
         session.commit()
     return plan
 
