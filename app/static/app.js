@@ -5818,7 +5818,7 @@ function glMapArea(key, slot, o) {
     return slot.slice(0, at) + slot.slice(at).replace('<div class="gl-map-slot', `<div data-mapflip="${key}"${fin} class="gl-map-slot${inCls}`);
   }
   const cls = (slot.match(/<div class="(gl-map-slot[^"]*)"/) || [, "gl-map-slot"])[1];
-  return `<div class="${cls} gl-numsv${inCls}" data-mapflip="${key}"${fin}>${glNumsView(o, cls.includes("gl-map-mini"))}</div>`;
+  return `<div class="${cls} gl-numsv${inCls}" data-mapflip="${key}"${fin}>${glNumsView(o, cls.includes("gl-map-mini"), key)}</div>`;
 }
 // The footer's flip chip, for a page with a map (or its figures) on it.
 function glFlipChip(body) {
@@ -5829,7 +5829,42 @@ function glFlipChip(body) {
   const zoom = nums ? "" : `<button type="button" class="gl-chip gl-zoomchip" data-gl-zoom="-1" aria-label="Zoom the map out">−</button><button type="button" class="gl-chip gl-zoomchip" data-gl-zoom="1" aria-label="Zoom the map in">+</button>`;
   return `${zoom}<button type="button" class="gl-chip gl-flipchip" data-mapflip-btn="${key}" aria-label="${nums ? "Show the map" : "Show the figures"}">${nums ? "Map" : "123"}</button>`;
 }
-function glNumsView(o, mini) {
+// What the rest of the route takes, from the car's own % on arrival (to 0.1),
+// the route's km and minutes and the battery now. Shared by every design's
+// figures box while navigating.
+function glToGo(o, f) {
+  const { nav, pct, nw, n } = o;
+  const L = glLiveState.data || {}, now = nw || L.now || {};
+  const pctNow = pct ?? now.battery_level ?? now.soc ?? null;
+  const pack = lastData && lastData.vehicle && lastData.vehicle.usable_capacity_kwh;
+  const estFull = lastData && lastData.battery && lastData.battery.est_full_range_km;
+  const lc = (lastData && lastData.last_charge) || {};
+  const rate = o.costRate ?? (lc.cost != null && lc.energy_added_kwh > 0 ? lc.cost / lc.energy_added_kwh : null);
+  const cur = o.cur || (lastData && lastData.currency) || "RM";
+  const ap = nav.arrive_pct;
+  // Arriving with more than now, the route has a charging stop in it: what
+  // the rest takes cannot be told from the two figures, so none is shown.
+  const needPct = pctNow != null && ap != null && ap <= pctNow + 0.05 ? Math.max(0, pctNow - ap) : null;
+  const needKwh = needPct != null && pack ? needPct * pack / 100 : null;
+  const whGo = needKwh != null && nav.km > 0.5 ? needKwh * 1000 / nav.km : null;
+  const spdGo = nav.km != null && nav.minutes > 0 ? nav.km / (nav.minutes / 60) : null;
+  const rangeNow = now.range_km ?? o.range ?? null;
+  // The range on arrival: the car's own range now, scaled to the % it will
+  // arrive with, so it agrees with the range shown beside it.
+  const kmLeft = ap == null ? null : rangeNow != null && pctNow > 0 ? rangeNow * ap / pctNow : estFull ? estFull * ap / 100 : null;
+  return { now, pctNow, pack, rate, cur, rangeNow, togo: [
+    f(needKwh != null ? n(needKwh, 1, true) : "—", "kWh to go"),
+    f(needPct != null ? n(needPct, 1, true) : "—", "% batt to go"),
+    // Over a short way the car's % on arrival (to 0.1) is too coarse for this.
+    // Nor is a figure no car drives at (the two % readings disagreeing).
+    ...(whGo != null && nav.km >= 3 && whGo >= 40 && whGo <= 500 ? [f(n(whGo), "Wh/km to go")] : []),
+    f(kmLeft != null ? n(kmLeft) : "—", "km range there", ap != null && ap < 15 ? "warn" : "", "o1"),
+    f(spdGo != null ? n(spdGo) : "—", "avg km/h to go", "", "o1"),
+    f(rate != null && needKwh != null ? n(needKwh * rate, 2, true) : "—", `cost to go ${cur}`, "", "o2"),
+  ] };
+}
+
+function glNumsView(o, mini, key) {
   const { nav, t, lt, kw, pct, tw, n, spd, nw, navOnly } = o;
   const dist = t ? t.distance_km : lt && lt.distance_km;
   const mins = t ? t.duration_min : lt && lt.duration_min;
@@ -5880,7 +5915,32 @@ function glNumsView(o, mini) {
           : fig(nw && nw.energy_kwh != null && lt && lt.wh_per_km > 0 ? n(nw.energy_kwh * 1000 / lt.wh_per_km) : "—", "km at last trip's rate")}${fig(odo != null ? n(odo, 0) : "—", "odo km")}${nw && nw.out_temp != null ? fig(n(nw.out_temp, 0), "°C outside") : ""}</div></div>`;
     const speedF = nw ? `<div class="gl-nv-spd" style="color:${spd != null && spd > 0.5 ? glSkinColour(spd) : "#e8fbff"}">${spd != null ? Math.round(spd) : "—"}<small>km/h</small>
     <span class="gl-mapo-gear">${["P", "R", "N", "D"].map((g) => `<b class="${nw.shift === g ? "on" : ""}">${g}</b>`).join("")}</span></div>` : "";
-    return `${speedF}${side}<div class="gl-nv-trip gl-nv-full">${full}</div>`;
+    // Navigating, the rest of the route under the destination.
+    const go = nav ? glToGo(o, (val, unit, tone = "", cls = "") => `<b class="${tone}${cls ? " " + cls : ""}">${val}<small>${unit}</small></b>`).togo : null;
+    const side2 = go ? side.replace(/<\/div>$/, `<div class="gl-nv-go2"><em>Rest of the route</em>${go.join("")}</div></div>`) : side;
+    return `${speedF}${side2}<div class="gl-nv-trip gl-nv-full">${full}</div>`;
+  }
+  // A side box navigating: the route, then what the rest of it takes (all
+  // from the car's own % on arrival and route figures), then this drive's
+  // figures the design shows nowhere else. o1 / o2 give way on short screens.
+  if (mini && nav) {
+    const f = (val, unit, tone = "", cls = "") => `<b class="${tone}${cls ? " " + cls : ""}">${val}<small>${unit}</small></b>`;
+    const { now, pack, rate, cur, rangeNow, togo } = glToGo(o, f);
+    // This drive: only what the design has no other place for.
+    const used = o.usedPct ?? (t && pack && t.energy_kwh > 0 ? Math.min(100, t.energy_kwh / pack * 100) : null);
+    const costSoFar = rate != null && t && t.energy_kwh != null ? n(t.energy_kwh * rate, 2, true) : "—";
+    const kwTxt = kw == null ? "—" : n(Math.abs(kw), 1);
+    const kwF = f(kwTxt, kw != null && kw < 0 ? (now.charging ? "charge kW" : "regen kW") : "kW now", kw != null && kw < 0 ? "good" : "");
+    const drive = !t ? [] : key === "dial" ? [
+      f(v(t.regen_kwh, 2), "regen kWh", "good"), f(v(used, 2, true), "% batt used"), f(costSoFar, `cost ${cur}`, "", "o2"),
+    ] : key === "cockpit" ? [
+      f(v(t.distance_km, 1, true), "km"), f(v(t.duration_min), "min"), kwF, f(costSoFar, `cost ${cur}`, "", "o2"),
+      f(v(now.out_temp), "°C outside", "", "o2"),
+    ] : [
+      f(costSoFar, `cost ${cur}`),
+    ];
+    return `${navBlock}<div class="gl-nv-trip gl-nv-mini gl-nv-go"><em class="gl-nv-sub">Rest of the route</em>${togo.join("")}</div>${
+      drive.length ? `<div class="gl-nv-trip gl-nv-mini gl-nv-go gl-nv-so"><em class="gl-nv-sub">This drive so far</em>${drive.join("")}</div>` : ""}`;
   }
   // A side box (Round Mix, Dial, the Cockpit) with no destination: the
   // drive, or parked the last trip, in full, then the battery now. Figures
@@ -6951,7 +7011,9 @@ function glZoomBy(dz, now = false) {
 // glMapUpdate), so the view slides instead of stepping. Frames are capped:
 // GL_MAP_FPS while the screen is bright, GL_MAP_FPS_DIM while dimmed (most
 // of a drive), since each frame repaints the map. Nothing else is redrawn.
-const GL_MAP_FPS = 30, GL_MAP_FPS_DIM = 4;
+// Bright: 15 a second, half the earlier 30, to halve the map drawing (battery);
+// it still reads as motion. One number to put back if it looks too stepped.
+const GL_MAP_FPS = 15, GL_MAP_FPS_DIM = 4;
 let glMapFrameAt = 0;
 function glMapFrame(ts) {
   requestAnimationFrame(glMapFrame);
@@ -7029,6 +7091,7 @@ function glFitRow(row) {
 
 // Sizes that depend on a box's own height, set once per draw: the Cockpit's
 // trip tiles (data-fit on the pager: short, small, tiny) and Mix's speed.
+const GL_CUT = { sig: "", n: 0 };
 function glFitSized(root) {
   // The Dial's power dial takes the speed dial's drawn size, whichever of its
   // box's height or width limits that (the gear column narrows it on a small
@@ -7048,11 +7111,27 @@ function glFitSized(root) {
   if (box) {
     // From the full set each time: after a resize to a taller screen, figures
     // dropped for the shorter one come back.
-    const steps = ["cut2", "cut1", "cut0", "cuth", "cutf"];
-    box.classList.remove(...steps);
-    for (const step of steps) {
-      if (box.scrollHeight <= box.clientHeight + 1) break;
-      box.classList.add(step);
+    const steps = ["cut2", "cut1", "cut0", "cuth", "cutf", "cutg", "cutx"];
+    // The answer for this box, screen and set of figures is kept: a redraw
+    // (once a second) applies it and checks it still fits, one measurement
+    // in place of one per step. A change of screen or figures starts over.
+    const sig = [box.dataset.mapflip, innerWidth, innerHeight, box.querySelectorAll("b").length, box.querySelectorAll("em").length].join("|");
+    let done = false;
+    if (GL_CUT.sig === sig) {
+      box.classList.remove(...steps);
+      box.classList.add(...steps.slice(0, GL_CUT.n));
+      done = box.scrollHeight <= box.clientHeight + 1;
+      if (!done) box.classList.remove(...steps);
+    }
+    if (!done) {
+      // From the full set (a fit after a resize runs on markup already cut).
+      box.classList.remove(...steps);
+      let n = 0;
+      for (const step of steps) {
+        if (box.scrollHeight <= box.clientHeight + 1) break;
+        box.classList.add(step); n++;
+      }
+      GL_CUT.sig = sig; GL_CUT.n = n;
     }
   }
   const vp = root.querySelector(".gl-vpages"), t = vp && vp.querySelector(".gl-vpage > .gl-rt");
@@ -7084,34 +7163,51 @@ function glFit(root) {
   for (const [e, fs] of fix) e.style.fontSize = fs.toFixed(1) + "px";
   // A box title that does not fit takes its short form (Est. range: Range).
   for (const e of root.querySelectorAll("[data-short]")) {
-    if (!e.dataset.long) e.dataset.long = e.textContent;
-    e.textContent = e.dataset.long;
+    // Written only when it changes: every write here makes the browser lay
+    // the whole page out again at the next measurement (once a second).
+    const long = e.dataset.long || e.textContent;
+    if (e.textContent !== long) e.textContent = long;
     const rg = document.createRange(); rg.selectNodeContents(e);
-    if (rg.getBoundingClientRect().width > e.clientWidth - 0.5) e.textContent = e.dataset.short;
+    if (rg.getBoundingClientRect().width > e.clientWidth - 0.5) { e.dataset.long = long; e.textContent = e.dataset.short; }
   }
   // A tile label that still runs past its tile: the tile's icon gives way.
+  // Measured for every tile together, then written together (and once more
+  // for the second step): a write between two measurements makes the browser
+  // lay the whole page out again, and tile by tile that was two layouts a
+  // tile, every second.
+  const tiles = [];
   for (const t of root.querySelectorAll(".gl-rt")) {
     const ic = t.querySelector("i"), lab = t.querySelector("span");
     if (!ic || !lab) continue;
-    ic.style.display = "";
-    lab.style.fontSize = "";
+    if (ic.style.display) ic.style.display = "";
+    if (lab.style.fontSize) lab.style.fontSize = "";
     const rg = document.createRange(); rg.selectNodeContents(lab);
-    const edge = t.getBoundingClientRect().right - parseFloat(getComputedStyle(t).paddingRight || 0);
-    // A label a little too wide shrinks (to 85% at most) and keeps its icon;
-    // only a label still too wide then loses the icon.
-    let past = rg.getBoundingClientRect().right - edge;
-    if (past > 0.5) {
-      const fs0 = parseFloat(getComputedStyle(lab).fontSize), w0 = rg.getBoundingClientRect().width;
-      const fit = fs0 * (w0 - past) / w0 * 0.98;
-      if (fit >= fs0 * 0.85) lab.style.fontSize = fit.toFixed(1) + "px";
-      else ic.style.display = "none";
-    }
-    // Still past the edge with the icon gone: the label shrinks to fit.
-    const over = rg.getBoundingClientRect().right - edge;
-    if (over > 0.5) {
-      const fs = parseFloat(getComputedStyle(lab).fontSize), w = rg.getBoundingClientRect().width;
-      lab.style.fontSize = Math.max(6.5, fs * (w - over) / w * 0.97).toFixed(1) + "px";
-    }
+    tiles.push({ t, ic, lab, rg });
+  }
+  for (const x of tiles) {
+    const r = x.rg.getBoundingClientRect();
+    x.edge = x.t.getBoundingClientRect().right - parseFloat(getComputedStyle(x.t).paddingRight || 0);
+    x.past = r.right - x.edge; x.w0 = r.width;
+    if (x.past > 0.5) x.fs0 = parseFloat(getComputedStyle(x.lab).fontSize);
+  }
+  // A label a little too wide shrinks (to 85% at most) and keeps its icon;
+  // only a label still too wide then loses the icon.
+  const again = [];
+  for (const x of tiles) {
+    if (!(x.past > 0.5)) continue;
+    const fit = x.fs0 * (x.w0 - x.past) / x.w0 * 0.98;
+    if (fit >= x.fs0 * 0.85) x.lab.style.fontSize = fit.toFixed(1) + "px";
+    else x.ic.style.display = "none";
+    again.push(x);
+  }
+  // Still past the edge with the icon gone: the label shrinks to fit.
+  for (const x of again) {
+    const r = x.rg.getBoundingClientRect();
+    x.over = r.right - x.edge; x.w = r.width;
+    if (x.over > 0.5) x.fs = parseFloat(getComputedStyle(x.lab).fontSize);
+  }
+  for (const x of again) {
+    if (x.over > 0.5) x.lab.style.fontSize = Math.max(6.5, x.fs * (x.w - x.over) / x.w * 0.97).toFixed(1) + "px";
   }
   // Heading rows (the odometer line, the trace and battery headings, the
   // power line): measured as laid out. Too wide for the box, the optional
