@@ -4801,6 +4801,14 @@ const glWake = { lock: null, supported: "wakeLock" in navigator, failed: false, 
 // screen on during video playback.
 const glWakeIOS = /iP(hone|ad|od)/.test(navigator.userAgent)
   || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+// From iOS 18.4 the Wake Lock holds in a home-screen app, so there the video
+// plays only while no lock is held: the video, small as it is, is decoded and
+// put on screen ten times a second for the whole drive. (iOS 26 still reports
+// 18_x in its user agent, so 18.4 or later covers it.)
+const glWakeIOSLockOk = (() => {
+  const m = navigator.userAgent.match(/OS (\d+)_(\d+)/);
+  return !!m && (+m[1] > 18 || (+m[1] === 18 && +m[2] >= 4));
+})();
 function glWakeVideo(on) {
   if (on) {
     if (!glWake.video) {
@@ -4833,8 +4841,10 @@ function glWakeWanted() { return glanceTab === "live" && glanceVisible() && !doc
 // On by default every time the app opens. The chip at the bottom of the page
 // switches it to "always bright" for the rest of that visit — for a phone on
 // a cable in the car; reopening the app goes back to auto-dim.
-const GL_DIM_MS = 10000;
-const GL_DIM_EVENT_MS = 8000;
+// 5 s and 4 s from 14 Nov 2026 (were 10 and 8): in stop-go traffic the car's
+// own events kept the screen bright for much of a drive.
+const GL_DIM_MS = 5000;
+const GL_DIM_EVENT_MS = 4000;
 const GL_BRAKE_KMH_S = 10;   // about 0.28 g: firmer than the strongest regen
 let glDimTimer = null;
 const glDim = { off: false };
@@ -4862,17 +4872,24 @@ async function glWakeSync() {
   document.body.classList.toggle("gl-eco", want);
   if (!want || !glDimAllowed()) { clearTimeout(glDimTimer); glDimTimer = null; document.body.classList.remove("gl-dim"); }
   else if (!glDimTimer && !document.body.classList.contains("gl-dim")) glDimArm();
-  if (glWakeIOS) glWakeVideo(want);
+  // Before 18.4 the video as before: started here, inside the tap that may
+  // be needed to let it play.
+  if (glWakeIOS && !glWakeIOSLockOk) glWakeVideo(want);
   if (want && !glWake.lock && glWake.supported) {
     try {
       glWake.lock = await navigator.wakeLock.request("screen");
       glWake.failed = false;
-      glWake.lock.addEventListener("release", () => { glWake.lock = null; });
+      glWake.lock.addEventListener("release", () => {
+        glWake.lock = null;
+        // Lost while still wanted: the video holds the screen until a new lock.
+        if (glWakeIOS && glWakeWanted()) glWakeVideo(true);
+      });
     } catch (_) { glWake.failed = true; }
   } else if (!want && glWake.lock) {
     try { await glWake.lock.release(); } catch (_) { /* already gone */ }
     glWake.lock = null;
   }
+  if (glWakeIOS && glWakeIOSLockOk) glWakeVideo(want && !glWake.lock);
 }
 // A tap counts as the gesture iOS wants before it plays media, and lets a
 // refused Wake Lock be asked for again.
