@@ -14433,7 +14433,12 @@ def test_streamed_charge_the_car_called_dc_is_ac_when_its_figures_say_so():
     try:
         with TestClient(app) as client:
             vin = sess.scalars(select(Vehicle.vin)).first()
+            # A time no saved charge covers (the demo data moves with the date;
+            # matched to a polled charge, the streamed one is not this row).
             at = sync_mod.now_local().replace(microsecond=0) - timedelta(hours=40)
+            taken = [(c.start_time, c.end_time) for c in sess.scalars(select(Charge)).all()]
+            while any(st <= at + timedelta(seconds=7938) and at <= en for st, en in taken):
+                at -= timedelta(hours=3)
             ts = at.replace(tzinfo=sync_mod.MYT).timestamp()
             rec = {"vin": vin, "start_ts": ts, "end_ts": ts + 7938,
                    "start_time": at.isoformat(timespec="seconds"),
@@ -14557,3 +14562,38 @@ def test_a_route_line_cut_short_is_read_and_an_unreadable_one_is_kept():
                 state.put(s, state.BAD_ROUTES_KEY, prev or "[]")
                 s.commit()
             routes._BAD_ROUTES_SEEN.clear()
+
+
+def test_the_cars_route_line_protobuf_is_read_and_traffic_only_keeps_the_route():
+    # Five RouteLines saved on 15 Nov 2026 (the drive to Yee Hong Food Court).
+    from app import navroute
+    from app.api import routes
+
+    full = ("ClhhY2FlSW1+bmh+RGVceWBAclVzUWBXbVRkSnNHbldhUm5NfUlwUG1Kbl1tVWpTdlhqSWhNbFFm"
+            "WGxLYlFuSmZPbFFwW3ZKdk5qQ3RFZkFoQmRDdkRoRWJGEgUNpptEPxIHDZEpzz4QAQ==")
+    pts, how = navroute.decode_route_info(full)
+    assert how.startswith("base64 protobuf, field 1") and len(pts) == 20
+    # It starts where the car was (5.34228, 100.29462).
+    assert abs(pts[0][0] - 5.34228) < 1e-4 and abs(pts[0][1] - 100.29462) < 1e-4
+    for traffic in ("EgUNFJVFPxIHDSBi4z0QAQ==",
+                    "EgUNqEYKQRIHDYwxJkAQARIHDddtRD8QARIHDamlNT8QARIFDcV0JT8SBw2bVBA/EAISBw0HXzg+EAE="):
+        assert navroute.decode_route_info(traffic) == (None, navroute.TRAFFIC_ONLY)
+
+    import time as _t
+    vin = "TESTROUTEVIN1"
+    try:
+        with routes._LIVE_LOCK:
+            routes._LIVE_MEM[vin] = {"RouteLine": full, "Location": {"latitude": 5.34228, "longitude": 100.29462},
+                                     "_kt": {"Location": _t.time()}}
+        got = routes.live_route(vin=vin, bad=0)
+        assert len(got["points"]) == 20
+        with routes._LIVE_LOCK:
+            routes._LIVE_MEM[vin]["RouteLine"] = "EgUNFJVFPxIHDSBi4z0QAQ=="
+        got = routes.live_route(vin=vin, bad=0)
+        assert len(got["points"]) == 20 and got["format"].startswith("traffic update")
+        assert "reason" not in got
+    finally:
+        with routes._LIVE_LOCK:
+            routes._LIVE_MEM.pop(vin, None)
+        routes._ROUTE_LAST.pop(vin, None)
+        routes._ROUTE_CACHE.clear()
