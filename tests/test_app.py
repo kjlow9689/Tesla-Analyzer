@@ -14761,36 +14761,48 @@ def test_park_spot_moved_only_when_carried_off_not_driven(seeded):
 
 
 def test_park_photo_taken_before_its_trip_closes_is_linked_later(seeded):
-    """Auto Spot snaps in P before the trip is saved: once the trip ending at
-    the photo's odometer is saved, the photo is linked to it."""
+    """A spot photo goes with the trip that started last before it and ended
+    within 30 min of it, by time (the odometer it carries can be stale). The
+    21 Nov case: photo at 18:26 in P before trip 18:03-18:28 was saved; it was
+    linked to the trip before (ended 17:11), and moves to its own once saved."""
     from app.api import routes
     from app.database import SessionLocal
     from app.models import Drive, ParkPhoto
 
+    D = lambda st, en, o0, o1: Drive(
+        vehicle_id=v.id, start_time=st, end_time=en, distance_km=o1 - o0,
+        duration_min=(en - st).total_seconds() / 60, start_soc=60, end_soc=58,
+        energy_used_kwh=1.2, avg_speed_kmh=15, max_speed_kmh=70, outside_temp_c=30,
+        start_odo_km=o0, end_odo_km=o1)
     with SessionLocal() as s:
         v = routes._first_vehicle(s)
-        # Its own trip, later than anything else here (other tests clear or
-        # add trips).
-        d = Drive(vehicle_id=v.id, start_time=datetime(2031, 1, 1, 10, 0),
-                  end_time=datetime(2031, 1, 1, 10, 30), distance_km=9, duration_min=30,
-                  start_soc=60, end_soc=57, energy_used_kwh=1.4, avg_speed_kmh=18,
-                  max_speed_kmh=50, outside_temp_c=28, start_odo_km=99990.0, end_odo_km=99999.0)
-        s.add(d)
+        day = datetime(2031, 11, 21)
+        before = D(day.replace(hour=16, minute=48), day.replace(hour=17, minute=11), 99590.6, 99596.5)
+        s.add(before)
         s.flush()
-        p = ParkPhoto(vehicle_id=v.id, ts=d.end_time - timedelta(seconds=40), coords="",
-                      odo_km=float(d.end_odo_km) + 0.05, mime="image/jpeg", size=4,
-                      data=b"\xff\xd8\xff\x00")
-        far = ParkPhoto(vehicle_id=v.id, ts=d.end_time - timedelta(seconds=30), coords="",
-                        odo_km=float(d.end_odo_km) + 5.0, mime="image/jpeg", size=4,
-                        data=b"\xff\xd8\xff\x00")
-        s.add_all([p, far])
+        photo = ParkPhoto(vehicle_id=v.id, ts=day.replace(hour=18, minute=26), coords="",
+                          odo_km=99600.6, drive_id=before.id,   # what the old rule did
+                          mime="image/jpeg", size=4, data=b"\xff\xd8\xff\x00")
+        late = ParkPhoto(vehicle_id=v.id, ts=day.replace(hour=21, minute=0), coords="",
+                         odo_km=99603.0, mime="image/jpeg", size=4, data=b"\xff\xd8\xff\x00")
+        s.add_all([photo, late])
         s.commit()
-        with mock.patch.object(routes.sync_mod, "now_local", return_value=d.end_time + timedelta(hours=1)):
-            assert routes._link_park_photos(s, v) == 1
-        s.refresh(p); s.refresh(far)
-        assert p.drive_id == d.id and far.drive_id is None
-        assert "?t=" in routes._park_photo_meta(p)["url"]
-        s.delete(p); s.delete(far); s.delete(d)
+        now = day.replace(hour=22)
+        with mock.patch.object(routes.sync_mod, "now_local", return_value=now):
+            # Its own trip not saved yet: not the 17:11 one either.
+            routes._link_park_photos(s, v)
+            s.refresh(photo)
+            assert photo.drive_id is None
+            own = D(day.replace(hour=18, minute=3), day.replace(hour=18, minute=28), 99596.5, 99603.0)
+            s.add(own)
+            s.commit()
+            routes._link_park_photos(s, v)
+        s.refresh(photo); s.refresh(late)
+        assert photo.drive_id == own.id
+        assert late.drive_id is None          # 2.5 h after its trip ended
+        assert "?t=" in routes._park_photo_meta(photo)["url"]
+        for x in (photo, late, own, before):
+            s.delete(x)
         s.commit()
 
 
@@ -14849,3 +14861,38 @@ def test_park_photo_kept_on_phone_uses_its_own_time_and_place(seeded):
         assert r2.json()["saved"]["coords_from"] in ("car", "phone", "trip")
         client.delete(f"/api/park-photo/{p['id']}")
         client.delete(f"/api/park-photo/{r2.json()['saved']['id']}")
+
+
+def test_ingest_times_the_climate_readings_so_the_newest_decides():
+    """The stored path records when HvacPower and HvacFanSpeed arrived, so a
+    trip's climate reading is whichever came last, as on the Live page: a fan
+    reading of 0 older than an HvacPower On does not turn climate off."""
+    import json as _json
+
+    from app.database import SessionLocal
+    from app import state
+    from app import sync as sync_mod
+
+    settings = get_settings()
+    old_pc = settings.app_passcode
+    settings.app_passcode = ""
+    sess = SessionLocal()
+    prev = state.get(sess, state.TELEMETRY_LATEST_KEY)
+    try:
+        with TestClient(app) as client:
+            client.post("/api/telemetry", json={"records": [{
+                "vin": "CLIMATETIME1", "createdAt": "2026-11-21T10:00:00Z",
+                "data": [{"key": "HvacFanSpeed", "value": {"intValue": 0}},
+                         {"key": "Gear", "value": {"stringValue": "ShiftStateD"}}]}]})
+            client.post("/api/telemetry", json={"records": [{
+                "vin": "CLIMATETIME1", "createdAt": "2026-11-21T10:02:00Z",
+                "data": [{"key": "HvacPower", "value": {"stringValue": "HvacPowerStateOn"}}]}]})
+        car = _json.loads(state.get(SessionLocal(), state.TELEMETRY_LATEST_KEY))["CLIMATETIME1"]
+        kt = car.get("_kt") or {}
+        assert kt.get("HvacPower", 0) > kt.get("HvacFanSpeed", 0) > 0
+        assert sync_mod.snapshot_from_telemetry(car, kt["HvacPower"])["climate_on"] is True
+    finally:
+        state.put(sess, state.TELEMETRY_LATEST_KEY, prev or "{}")
+        sess.commit()
+        sess.close()
+        settings.app_passcode = old_pc
