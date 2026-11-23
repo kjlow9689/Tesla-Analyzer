@@ -5646,7 +5646,11 @@ function glLiveApply(L) {
     const w = nw.power_kw * 1000 / nw.speed_kmh;
     if (glLiveState.maxWh == null || w > glLiveState.maxWh) glLiveState.maxWh = w;
   }
-  if (nw.power_kw != null) {
+  // No power reading (the car has stopped sending pack current: parked,
+  // asleep), parked: nothing, not the last figure of the drive held on.
+  const pwStale = !L.driving && nw.age_sec != null && nw.age_sec > 60;
+  if ((nw.power_kw == null || pwStale) && !L.driving) glLiveState.inst = null;
+  if (nw.power_kw != null && !pwStale) {
     const kw = nw.power_kw;
     const v = nw.speed_kmh || 0;
     glLiveState.inst = { kw, regen: kw < 0, whkm: v > 5 && kw > 0 ? kw * 1000 / v : null, measured: true };
@@ -6819,8 +6823,9 @@ function renderGlance(d) {
           // it read 122 km against a rated 384 (12 Nov 2026). Until then the
           // car's own rated range shows.
           rangeHere: nw.energy_kwh != null && twA > 0 && t && +t.distance_km >= GL_RANGE_MIN_KM ? nw.energy_kwh * 1000 / twA : null, n,
+          // Parked, the last trip's (as its Net kWh beside it): "—" before.
           usedPct: t ? Math.min(100, Math.max(+t.soc_used || 0, lastData && lastData.vehicle && lastData.vehicle.usable_capacity_kwh && t.energy_kwh > 0
-            ? t.energy_kwh / lastData.vehicle.usable_capacity_kwh * 100 : 0)) : null,
+            ? t.energy_kwh / lastData.vehicle.usable_capacity_kwh * 100 : 0)) : (lt && lt.soc_used_pct != null ? +lt.soc_used_pct : null),
           packKwh: lastData && lastData.vehicle && lastData.vehicle.usable_capacity_kwh,
           // What a kWh out of the pack cost at the last charge, the charger's
           // loss included (RM 30.44 for 24.56 kWh at QBM: 1.24), as the trip
@@ -7206,7 +7211,17 @@ function glPaintAround(el, slot, host, root, next) {
 // map takes no touches, so a swipe over it still changes the design.
 const GL_MAP = { host: null, eng: null, kind: null, cfg: undefined, cfgAsked: false, gFailed: false,
   loading: {}, routeV: null, routeAsk: null, route: null, zoomKey: null };
-const GL_MAP_TILES = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
+// The backup map's tiles. CARTO's dark ones need a key since 2026 (without,
+// every tile reads "API KEY REQUIRED"); with none set on the server it is
+// OpenStreetMap's standard map, darkened on the page (.gl-osm-dark).
+function glMapTiles() {
+  const k = GL_MAP.cfg && GL_MAP.cfg.carto_key;
+  return k
+    ? { url: "https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png?key=" + encodeURIComponent(k),
+        opts: { maxZoom: 20, maxNativeZoom: 20 }, credit: "© OpenStreetMap contributors © CARTO", dark: false }
+    : { url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        opts: { maxZoom: 20, maxNativeZoom: 19 }, credit: "© OpenStreetMap contributors", dark: true };
+}
 function glNavName(name) {
   // The car sends the full address; the first part is the place.
   return name ? String(name).split(",")[0].trim().slice(0, 40) : "";
@@ -7229,7 +7244,14 @@ function glMapScript(id, src, css) {
   js.onload = glMapRedraw;
   js.onerror = () => {
     GL_MAP.loading[id] = false;
-    if (id === "google") glMapGoogleFailed();
+    js.remove();
+    // Not downloaded (no signal for a moment) is not a refused key: try
+    // again in 15 s, three times, before the backup map for this visit.
+    if (id === "google") {
+      GL_MAP.gTries = (GL_MAP.gTries || 0) + 1;
+      if (GL_MAP.gTries >= 3) glMapGoogleFailed("Google map would not download");
+      else setTimeout(glMapRedraw, 15000);
+    } else setTimeout(glMapRedraw, 15000);
   };
   document.head.appendChild(js);
 }
@@ -7315,10 +7337,11 @@ function glRouteSnap(pos) {
   return at || pos;
 }
 
-function glMapGoogleFailed() {
-  // A refused key (Google calls gm_authFailure) or no script: CARTO instead,
-  // for the rest of this visit.
+function glMapGoogleFailed(why) {
+  // A refused key (Google calls gm_authFailure) or no script: the backup map
+  // instead, for the rest of this visit, saying why on its credit line.
   if (GL_MAP.gFailed) return;
+  GL_MAP.why = typeof why === "string" ? why : "Google refused the key";
   GL_MAP.gFailed = true;
   if (GL_MAP.kind === "google") {
     if (GL_MAP.host) GL_MAP.host.remove();
@@ -7335,8 +7358,13 @@ function glMapReady() {
   if (GL_MAP.cfg === undefined) {
     if (!GL_MAP.cfgAsked) {
       GL_MAP.cfgAsked = true;
-      fetch("/api/map-config", { credentials: "same-origin" }).then((r) => (r.ok ? r.json() : {}))
-        .catch(() => ({})).then((c) => { GL_MAP.cfg = c || {}; glMapRedraw(); });
+      // A failed ask (no signal as the app opened, 23 Nov) is not "no Google
+      // key": that read as one kept the backup map for the whole visit. Ask
+      // again in 10 s instead.
+      fetch("/api/map-config", { credentials: "same-origin" })
+        .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
+        .then((c) => { GL_MAP.cfg = c || {}; glMapRedraw(); })
+        .catch(() => { setTimeout(() => { GL_MAP.cfgAsked = false; glMapRedraw(); }, 10000); });
     }
     return null;
   }
@@ -7547,8 +7575,13 @@ function glMapLeaflet(host) {
   fixCar.className = "gl-map-car gl-map-carfix";
   fixCar.innerHTML = GL_CAR_SVG;
   const credit = document.createElement("div");
+  const tiles = glMapTiles();
   credit.className = "gl-map-credit";
-  credit.textContent = "© OpenStreetMap contributors © CARTO";
+  // On the backup map with a Google key set: why, so it can be told apart
+  // from a key problem (fix that in Google Cloud) or a passing signal gap.
+  const why = GL_MAP.cfg && GL_MAP.cfg.google_key ? (GL_MAP.why || "") : "no Google key on the server";
+  credit.textContent = tiles.credit + (why ? ` · backup map: ${why}` : "");
+  host.classList.toggle("gl-osm-dark", tiles.dark);
   host.append(inner, fixCar, credit);
   const map = L.map(inner, { zoomControl: false, dragging: false, touchZoom: false, scrollWheelZoom: false,
     doubleClickZoom: false, boxZoom: false, keyboard: false, tap: false, fadeAnimation: false, zoomSnap: 0,
@@ -7556,7 +7589,7 @@ function glMapLeaflet(host) {
   // {r} asks CARTO for its sharp @2x tiles on a high-density screen, at the
   // normal label size (detectRetina would also step the zoom up a level,
   // shrinking every street name to half size).
-  L.tileLayer(GL_MAP_TILES, { subdomains: "abcd", maxZoom: 20, maxNativeZoom: 20, detectRetina: false }).addTo(map);
+  L.tileLayer(tiles.url, { ...tiles.opts, detectRetina: false }).addTo(map);
   map.setView([0, 0], 2);
   let dest = null, line = null, lineDim = null, rot = 0, sizeKey = "";
   const layout = () => {
