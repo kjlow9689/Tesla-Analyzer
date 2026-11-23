@@ -599,7 +599,10 @@ function spotAutoTick(L) {
   const nw = (L && L.now) || {};
   if (spotLastAuto() && !spotAuto.run) spotShortStopCheck(nw);
   const fresh = nw.age_sec == null || nw.age_sec < 90;
-  const gear = fresh ? nw.shift : null;
+  // P only when the car said Park: the server's "shift" also reads an invalid
+  // or not yet heard gear as P (a photo at a light in D, 24 Nov).
+  const saidP = nw.gear_raw === undefined ? nw.shift === "P" : nw.gear_raw === "ShiftStateP";
+  const gear = !fresh ? null : nw.shift === "P" && !saidP ? null : nw.shift;
   const moving = (+nw.speed_kmh || 0) > 0;
   if ((gear && gear !== "P") || (fresh && moving)) { spotAuto.armed = true; spotAuto.pSince = 0; }
   if (spotAuto.run) {
@@ -607,7 +610,10 @@ function spotAutoTick(L) {
     const heard = nw.age_sec != null && nw.age_sec < 15;
     // A photo asked for by tap (Retake, or Take photo with no signal) goes
     // ahead on the car's old gear; only the car heard driving stops it.
-    if (spotAuto.run.manual ? heard && moving : gear && gear !== "P") spotAutoStop("Cancelled: car in " + (gear || "motion"));
+    // The no-signal camera also stops once the car is heard again in a
+    // driving gear, moving or not: it was a gap in the signal, not a park.
+    if (spotAuto.run.still && heard && gear && gear !== "P") spotAutoStop(`Cancelled: car heard again in ${gear}`);
+    else if (spotAuto.run.manual ? heard && moving : gear && gear !== "P") spotAutoStop("Cancelled: car in " + (gear || "motion"));
     return;
   }
   if (!gear) return;   // a frame without the gear: wait for the next
@@ -644,7 +650,8 @@ setInterval(() => {
     // Gone quiet soon after a P photo, last word P: maybe a short stop and
     // then driven on with no signal. Look again; the same view takes nothing.
     const la = spotLastAuto();
-    const afterShort = la && la.via === "P" && !la.followed && nw.shift === "P"
+    const saidP = nw.gear_raw === undefined ? nw.shift === "P" : nw.gear_raw === "ShiftStateP";
+    const afterShort = la && la.via === "P" && !la.followed && saidP
       && Date.now() - la.at <= SPOT_SHORT_MS;
     if (afterShort) {
       if (quiet < SPOT_QUIET_S) return;
@@ -667,7 +674,10 @@ setInterval(() => {
     const v = +nw.speed_kmh || 0;
     if (quiet < SPOT_QUIET_S) { spotAuto.lastWhy = null; return; }
     if (v > SPOT_CRAWL_KMH) return why(`last heard at ${Math.round(v)} km/h`);
-    if (nw.shift === "P") return why("last heard in P");
+    // Last heard standing in D: a light or a queue. The car can go quiet
+    // there too, and the still view then took a photo at the light (24 Nov).
+    if (v <= 0 && !saidP) return why(`last heard stopped in ${nw.gear_raw || nw.shift || "gear"} (a light or a queue)`);
+    if (saidP) return why("last heard in P");
     spotAuto.lastWhy = null;
     spotLog(`no signal ${Math.round(quiet)} s, last ${Math.round(v)} km/h ${nw.shift || "?"}: camera on, photo once it stops`);
     spotAuto.armed = false;
@@ -5626,7 +5636,13 @@ function glLiveApply(L) {
     const dt = nw.ts && lt ? nw.ts - lt : 0;
     // Only while the pedal is unknown: once the car streams BrakePedal (the
     // relay's level-3 set), the pedal alone decides.
-    const braking = nw.brake == null && v != null && lv != null && dt >= 0.5 && dt <= 2.5
+    // Once the car has sent its brake pedal this visit, only the pedal (and a
+    // gear change) wakes the screen: slowing on regen or rolling to a stop
+    // without the brake lit it up too (24 Nov). The slowing and the stop
+    // stand in for the pedal only for a car that does not send it.
+    if (nw.brake != null) glLiveState.brakeSeen = true;
+    const noPedal = !glLiveState.brakeSeen;
+    const braking = noPedal && nw.brake == null && v != null && lv != null && dt >= 0.5 && dt <= 2.5
       && (lv - v) / dt >= GL_BRAKE_KMH_S;
     // The pedal itself, when the car streams it, is the surest sign of all.
     // Each event wakes the screen once and starts the same wake; holding
@@ -5635,9 +5651,11 @@ function glLiveApply(L) {
     // server after 2 minutes, so the next press is still seen).
     const pedal = nw.brake === true && glLiveState.lastBrake !== true;
     glLiveState.lastBrake = nw.brake;
-    if (pedal || braking || (v === 0 && lv > 0) || (nw.shift && ls && nw.shift !== ls)) glDimArm(GL_DIM_EVENT_MS);
+    // A gear change, not the car's passing "invalid" gear (read as P).
+    const sh = nw.gear_raw && !/^ShiftState[PRND]$/.test(nw.gear_raw) ? null : nw.shift;
+    if (pedal || braking || (noPedal && v === 0 && lv > 0) || (sh && ls && sh !== ls)) glDimArm(GL_DIM_EVENT_MS);
     if (v != null && nw.ts) { glLiveState.lastV = v; glLiveState.lastT = nw.ts; }
-    if (nw.shift) glLiveState.lastShift = nw.shift;
+    if (sh) glLiveState.lastShift = sh;
   }
   glLiveState.data = L;
   glLiveState.recvAt = Date.now();
@@ -7674,10 +7692,15 @@ function glMapLeaflet(host) {
       inner.style.transform = `rotate(${rot.toFixed(1)}deg)`;
     },
     jump(p, z) { layout(); map.setView(p, z, { animate: false }); },
-    zoomTo(p, z) { map.setView(p, z, { animate: false }); },
+    // Animated: a zoom without it makes Leaflet drop every tile and fetch the
+    // new level, a blank map for a moment (about 9 frames each step, the map
+    // flickering on + and - and on the speed zoom, 24 Nov). Animated, the old
+    // tiles stay, scaled, until the new ones are in.
+    zoomTo(p, z) { map.setView(p, z, { animate: true }); },
     // A frame (many a second): an instant move, the frames make the motion.
     // A redraw (once a second, car slow or stopped): a short glide if bright.
     follow(p, frame) {
+      if (map._animatingZoom) return;   // the zoom carries the view; a move now would cut it short
       const dx = map.latLngToContainerPoint(p).distanceTo(map.getSize().divideBy(2));
       const glide = !frame && dx < 400 && !document.body.classList.contains("gl-dim");
       if (dx > 0.5) map.panTo(p, { animate: glide, duration: 0.2, easeLinearity: 1, noMoveStart: true });
